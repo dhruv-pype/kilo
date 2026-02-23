@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kilo-postgres
+    environment:
+      POSTGRES_DB: kilo
+      POSTGRES_USER: kilo
+      POSTGRES_PASSWORD: kilo
+    ports:
+      - "5432:5432"
+    volumes:
+      - kilo_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kilo -d kilo"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: kilo-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  kilo_pgdata:
