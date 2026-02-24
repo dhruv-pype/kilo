@@ -17,6 +17,8 @@ import type { Message } from '../../common/types/message.js';
 import type { BotConfig } from '../../common/types/bot.js';
 import type { SkillDefinition } from '../../common/types/skill.js';
 import type { ToolRegistryEntry, HttpToolResponse } from '../../common/types/tool-registry.js';
+import type { BotId } from '../../common/types/ids.js';
+import type { LearningProposal } from '../../web-research/types.js';
 import { matchSkill } from '../skill-matcher/skill-matcher.js';
 import { composeSkillPrompt, composeGeneralPrompt } from '../prompt-composer/prompt-composer.js';
 import { decryptCredential } from '../../tool-execution/credential-vault.js';
@@ -24,6 +26,9 @@ import { executeHttpTool } from '../../tool-execution/http-executor.js';
 import { processResponse } from '../response-processor/response-processor.js';
 import { extractMemoryFacts } from '../memory-extractor/memory-extractor.js';
 import { evaluateForProposal } from '../skill-proposer/skill-proposer.js';
+import { detectLearningIntent, looksLikeServiceName } from '../../web-research/learning-detector.js';
+import { executeLearningFlow } from '../../web-research/learning-flow.js';
+import { WebResearchError } from '../../common/errors/index.js';
 
 /**
  * LLM Gateway interface — the Orchestrator depends on this abstraction,
@@ -79,7 +84,37 @@ export class MessageOrchestrator {
       this.data.loadSkills(botId as string),
     ]);
 
-    // 2. Match skill
+    // 2. Check for learning intent (fast regex — <1ms, runs before skill matching)
+    const learningIntent = detectLearningIntent(message.content);
+    if (learningIntent && learningIntent.confidence >= 0.7) {
+      // High confidence → full learning flow
+      const learningResult = await this.handleLearningFlow(
+        message,
+        botId as string,
+        learningIntent.serviceName,
+        sideEffects,
+      );
+
+      // Memory extraction still runs for learning messages
+      const memoryFacts = extractMemoryFacts(message.content);
+      if (memoryFacts.length > 0) {
+        sideEffects.push({ type: 'memory_write', facts: memoryFacts });
+      }
+
+      return { response: learningResult, sideEffects };
+    } else if (learningIntent && learningIntent.confidence >= 0.5) {
+      // Medium confidence → clarification (ask the user to confirm intent)
+      const clarification = buildLearningClarification(learningIntent.serviceName);
+
+      const memoryFacts = extractMemoryFacts(message.content);
+      if (memoryFacts.length > 0) {
+        sideEffects.push({ type: 'memory_write', facts: memoryFacts });
+      }
+
+      return { response: clarification, sideEffects };
+    }
+
+    // 3. Match skill
     const skillMatch = await matchSkill(message, skills);
 
     let response: ProcessedResponse;
@@ -314,6 +349,9 @@ export class MessageOrchestrator {
         context: botConfig.context,
         soul: botConfig.soul,
       },
+      skillSummary: skills.length > 0
+        ? skills.map((s) => ({ name: s.name, description: s.description }))
+        : undefined,
     });
 
     const llmResponse = await this.llm.complete(prompt, {
@@ -322,6 +360,48 @@ export class MessageOrchestrator {
     });
 
     return processResponse(llmResponse, null);
+  }
+
+  /**
+   * Handle a learning intent — run the web research pipeline
+   * and return a formatted proposal to the user.
+   */
+  private async handleLearningFlow(
+    message: OrchestratorInput['message'],
+    botId: string,
+    serviceName: string,
+    sideEffects: SideEffect[],
+  ): Promise<ProcessedResponse> {
+    try {
+      const result = await executeLearningFlow(this.llm, {
+        botId: botId as BotId,
+        userMessage: message.content,
+        serviceName,
+      });
+
+      sideEffects.push({
+        type: 'learning_proposal',
+        proposal: {
+          serviceName: result.proposal.serviceName,
+          endpointCount: result.proposal.toolProposal.endpoints.length,
+          skillCount: result.proposal.skillProposals.length,
+          sourceUrls: result.proposal.sourceUrls,
+        },
+      });
+
+      return formatLearningProposal(result.proposal);
+    } catch (err) {
+      if (err instanceof WebResearchError) {
+        return {
+          content: `I tried to learn about ${serviceName} but ran into an issue: ${err.message}`,
+          format: 'text',
+          structuredData: null,
+          skillId: null,
+          suggestedActions: ['Try again', 'Never mind'],
+        };
+      }
+      throw err;
+    }
   }
 
   /**
@@ -420,5 +500,61 @@ function formatSkillProposal(proposal: SkillProposal): ProcessedResponse {
     structuredData: null,
     skillId: null,
     suggestedActions: ['Yes, create it', 'No thanks'],
+  };
+}
+
+function formatLearningProposal(proposal: LearningProposal): ProcessedResponse {
+  const lines: string[] = [];
+  lines.push(`I've researched the **${proposal.serviceName}** API and here's what I found:`);
+  lines.push('');
+  lines.push(`**API**: ${proposal.toolProposal.baseUrl} (${proposal.toolProposal.authType} auth, ${proposal.toolProposal.endpoints.length} endpoints)`);
+  lines.push('');
+
+  if (proposal.skillProposals.length > 0) {
+    lines.push('**Skills I can create**:');
+    for (const skill of proposal.skillProposals) {
+      lines.push(`- **${skill.name}**: ${skill.description}`);
+    }
+    lines.push('');
+  }
+
+  if (proposal.authInstructions) {
+    lines.push(`**To get started**: ${proposal.authInstructions}`);
+    lines.push('');
+  }
+
+  lines.push('Want me to set this up?');
+
+  return {
+    content: lines.join('\n'),
+    format: 'text',
+    structuredData: null,
+    skillId: null,
+    suggestedActions: ['Yes, set it up', 'No thanks'],
+  };
+}
+
+/**
+ * Build a clarification response for medium-confidence learning intents.
+ * If the name looks like a service → ask if they want to research it.
+ * If the name looks like a capability → ask which API/service to look into.
+ */
+function buildLearningClarification(serviceName: string): ProcessedResponse {
+  if (looksLikeServiceName(serviceName)) {
+    return {
+      content: `I can learn how to use **${serviceName}**! Want me to research its API docs and set up an integration?`,
+      format: 'text',
+      structuredData: null,
+      skillId: null,
+      suggestedActions: [`Yes, learn ${serviceName}`, 'No thanks'],
+    };
+  }
+
+  return {
+    content: `I can learn that! Which API or service should I look into? For example, if you want me to ${serviceName.toLowerCase()}, I could look into a relevant API.`,
+    format: 'text',
+    structuredData: null,
+    skillId: null,
+    suggestedActions: ['Tell me more', 'Never mind'],
   };
 }

@@ -155,9 +155,26 @@ export function composeGeneralPrompt(input: GeneralCompositionInput): Prompt {
     }
   }
 
+  // Capabilities — so the bot knows what it can do
+  systemParts.push('\nCAPABILITIES:');
+  systemParts.push('- You can learn new API integrations. If a user wants you to interact with an external');
+  systemParts.push('  service, tell them to say "Learn how to use [ServiceName]" and you\'ll research the API');
+  systemParts.push('  docs and propose new tools and skills.');
+  systemParts.push('- You can propose and create new skills for recurring tasks.');
+  systemParts.push('- You remember facts from previous conversations and use them as context.');
+
+  // Current skills — so the bot knows what it already has
+  if (input.skillSummary && input.skillSummary.length > 0) {
+    systemParts.push('\nYOUR CURRENT SKILLS:');
+    for (const s of input.skillSummary) {
+      systemParts.push(`- ${s.name}: ${s.description}`);
+    }
+  }
+
   systemParts.push('\nCONSTRAINTS:');
   systemParts.push('- Be concise, friendly, and helpful.');
-  systemParts.push('- If the user asks you to do something you can\'t do yet, suggest creating a new skill for it.');
+  systemParts.push('- If the user asks you to do something you can\'t do yet, suggest creating a new skill');
+  systemParts.push('  or learning a new API integration.');
   systemParts.push('- Never fabricate data. If you don\'t have the information, say so.');
 
   const messages = conversationHistory.map((msg) => ({

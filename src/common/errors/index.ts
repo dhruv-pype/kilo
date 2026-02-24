@@ -154,3 +154,12 @@ export class ToolNotFoundError extends KiloError {
     this.name = 'ToolNotFoundError';
   }
 }
+
+// ─── Web Research Errors ─────────────────────────────────────────
+
+export class WebResearchError extends KiloError {
+  constructor(message: string, public readonly stage?: string, cause?: unknown) {
+    super('WEB_RESEARCH_ERROR', message, 502, cause);
+    this.name = 'WebResearchError';
+  }
+}

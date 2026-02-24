@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1620" height="980" viewBox="0 0 1620 980">
+  <defs>
+    <style>
+      .title { font: 700 24px Arial, sans-serif; fill: #111827; }
+      .actor { font: 600 14px Arial, sans-serif; fill: #111827; }
+      .msg { font: 12px Arial, sans-serif; fill: #1f2937; }
+      .small { font: 11px Arial, sans-serif; fill: #374151; }
+      .box { fill: #f9fafb; stroke: #374151; stroke-width: 1.2; rx: 6; }
+      .line { stroke: #9ca3af; stroke-width: 1; stroke-dasharray: 5 5; }
+      .branch { fill: #eef2ff; stroke: #4f46e5; stroke-width: 1; rx: 6; }
+      .arrow { stroke: #111827; stroke-width: 1.4; marker-end: url(#arrowHead); }
+      .return { stroke: #4b5563; stroke-width: 1.2; stroke-dasharray: 4 3; marker-end: url(#arrowHeadGray); }
+    </style>
+    <marker id="arrowHead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#111827" />
+    </marker>
+    <marker id="arrowHeadGray" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#4b5563" />
+    </marker>
+  </defs>
+
+  <rect width="1620" height="980" fill="#ffffff"/>
+  <text x="28" y="36" class="title">Kilo Chat Message Sequence (Current Flow)</text>
+
+  <!-- Participants -->
+  <rect x="40" y="70" width="120" height="34" class="box"/>
+  <text x="100" y="92" text-anchor="middle" class="actor">Client</text>
+
+  <rect x="220" y="70" width="160" height="34" class="box"/>
+  <text x="300" y="92" text-anchor="middle" class="actor">/api/chat</text>
+
+  <rect x="440" y="70" width="170" height="34" class="box"/>
+  <text x="525" y="92" text-anchor="middle" class="actor">Orchestrator</text>
+
+  <rect x="670" y="70" width="180" height="34" class="box"/>
+  <text x="760" y="92" text-anchor="middle" class="actor">DataLoader</text>
+
+  <rect x="910" y="70" width="170" height="34" class="box"/>
+  <text x="995" y="92" text-anchor="middle" class="actor">LLM Gateway</text>
+
+  <rect x="1140" y="70" width="190" height="34" class="box"/>
+  <text x="1235" y="92" text-anchor="middle" class="actor">Web Research Flow</text>
+
+  <rect x="1390" y="70" width="160" height="34" class="box"/>
+  <text x="1470" y="92" text-anchor="middle" class="actor">DB/Cache</text>
+
+  <!-- Lifelines -->
+  <line x1="100" y1="108" x2="100" y2="940" class="line"/>
+  <line x1="300" y1="108" x2="300" y2="940" class="line"/>
+  <line x1="525" y1="108" x2="525" y2="940" class="line"/>
+  <line x1="760" y1="108" x2="760" y2="940" class="line"/>
+  <line x1="995" y1="108" x2="995" y2="940" class="line"/>
+  <line x1="1235" y1="108" x2="1235" y2="940" class="line"/>
+  <line x1="1470" y1="108" x2="1470" y2="940" class="line"/>
+
+  <!-- Shared initial steps -->
+  <line x1="100" y1="150" x2="300" y2="150" class="arrow"/>
+  <text x="198" y="142" text-anchor="middle" class="msg">POST /api/chat (content, botId, userId)</text>
+
+  <line x1="300" y1="190" x2="1470" y2="190" class="arrow"/>
+  <text x="885" y="182" text-anchor="middle" class="msg">insert user message</text>
+
+  <line x1="300" y1="230" x2="525" y2="230" class="arrow"/>
+  <text x="412" y="222" text-anchor="middle" class="msg">orchestrator.process()</text>
+
+  <line x1="525" y1="270" x2="760" y2="270" class="arrow"/>
+  <text x="642" y="262" text-anchor="middle" class="msg">loadBotConfig + loadSkills</text>
+
+  <line x1="760" y1="310" x2="1470" y2="310" class="arrow"/>
+  <text x="1116" y="302" text-anchor="middle" class="msg">cache-first fetch (Redis/Postgres)</text>
+
+  <!-- Branch container -->
+  <rect x="360" y="340" width="1180" height="470" class="branch"/>
+  <text x="376" y="362" class="actor">Branching inside Orchestrator</text>
+
+  <!-- Learning path -->
+  <text x="390" y="392" class="actor">A) Learning intent detected (confidence >= 0.7)</text>
+  <line x1="525" y1="410" x2="1235" y2="410" class="arrow"/>
+  <text x="880" y="402" text-anchor="middle" class="msg">executeLearningFlow(serviceName)</text>
+
+  <line x1="1235" y1="450" x2="995" y2="450" class="arrow"/>
+  <text x="1115" y="442" text-anchor="middle" class="small">analyze docs with LLM (doc-extraction)</text>
+
+  <line x1="995" y1="490" x2="1235" y2="490" class="return"/>
+  <text x="1116" y="482" text-anchor="middle" class="small">extracted API info</text>
+
+  <line x1="1235" y1="530" x2="525" y2="530" class="return"/>
+  <text x="880" y="522" text-anchor="middle" class="msg">learning proposal (tool + skills)</text>
+
+  <!-- Medium-confidence clarification -->
+  <text x="390" y="570" class="actor">B) Learning intent medium confidence (0.5 - 0.69)</text>
+  <line x1="525" y1="590" x2="300" y2="590" class="return"/>
+  <text x="412" y="582" text-anchor="middle" class="msg">return clarification response</text>
+
+  <!-- Skill/general path -->
+  <text x="390" y="640" class="actor">C) No learning intent: skill match -> skill flow OR proposal/general chat</text>
+  <line x1="525" y1="660" x2="760" y2="660" class="arrow"/>
+  <text x="642" y="652" text-anchor="middle" class="small">load selective context/history/memory</text>
+
+  <line x1="525" y1="700" x2="995" y2="700" class="arrow"/>
+  <text x="760" y="692" text-anchor="middle" class="small">compose prompt + llm.complete()</text>
+
+  <line x1="995" y1="740" x2="525" y2="740" class="return"/>
+  <text x="760" y="732" text-anchor="middle" class="small">processResponse + sideEffects</text>
+
+  <!-- Shared final steps -->
+  <line x1="525" y1="840" x2="300" y2="840" class="return"/>
+  <text x="412" y="832" text-anchor="middle" class="msg">OrchestratorOutput(response, sideEffects)</text>
+
+  <line x1="300" y1="880" x2="1470" y2="880" class="arrow"/>
+  <text x="885" y="872" text-anchor="middle" class="msg">insert assistant message + async side effects</text>
+
+  <line x1="300" y1="920" x2="100" y2="920" class="return"/>
+  <text x="198" y="912" text-anchor="middle" class="msg">HTTP response { sessionId, response }</text>
+</svg>

@@ -141,6 +141,13 @@ class InstrumentedOrchestrator {
     console.log('');
     console.log(`  ${DIM}${CYAN}── thinking ──────────────────────────────────${RESET}`);
 
+    if (result.response.thinkingSummary) {
+      const summary = result.response.thinkingSummary.length > 200
+        ? result.response.thinkingSummary.slice(0, 200) + '...'
+        : result.response.thinkingSummary;
+      think('extended thinking', summary.replace(/\n/g, ' '));
+    }
+
     if (result.response.skillId) {
       think('skill matched', `${result.response.skillId}`);
     } else {
@@ -168,6 +175,12 @@ class InstrumentedOrchestrator {
           break;
         case 'api_call':
           think('api call', `${effect.toolName} ${effect.endpoint} → ${effect.status === 0 ? 'FAILED' : effect.status} (${effect.latencyMs}ms)`);
+          break;
+        case 'learning_proposal':
+          think('learning', `${effect.proposal.serviceName}: ${effect.proposal.endpointCount} endpoints, ${effect.proposal.skillCount} skills proposed`);
+          for (const url of effect.proposal.sourceUrls.slice(0, 3)) {
+            step('  📄', url);
+          }
           break;
       }
     }

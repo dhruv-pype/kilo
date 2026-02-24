@@ -56,6 +56,7 @@ export function processResponse(
     structuredData,
     skillId: skillId as SkillId | null,
     suggestedActions,
+    thinkingSummary: llmResponse.thinkingSummary,
   };
 }
 

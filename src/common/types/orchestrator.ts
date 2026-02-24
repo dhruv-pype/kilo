@@ -62,6 +62,7 @@ export interface GeneralCompositionInput {
   conversationHistory: Message[];
   memoryContext: MemoryFact[];
   botConfig: { name: string; personality: string; context: string; soul?: SoulDefinition | null };
+  skillSummary?: { name: string; description: string }[];
 }
 
 export interface Prompt {
@@ -77,7 +78,8 @@ export type TaskType =
   | 'skill_execution'
   | 'skill_generation'
   | 'complex_reasoning'
-  | 'data_analysis';
+  | 'data_analysis'
+  | 'doc_extraction';
 
 export interface ModelPreferences {
   taskType: TaskType;
@@ -92,6 +94,7 @@ export interface LLMResponse {
   model: string;
   usage: { promptTokens: number; completionTokens: number };
   latencyMs: number;
+  thinkingSummary?: string;
 }
 
 // ─── SkillProposer ─────────────────────────────────────────────
@@ -121,6 +124,7 @@ export interface ProcessedResponse {
   structuredData: Record<string, unknown> | null;
   skillId: SkillId | null;
   suggestedActions: string[];
+  thinkingSummary?: string;
 }
 
 // ─── Side Effects ──────────────────────────────────────────────
@@ -131,7 +135,15 @@ export type SideEffect =
   | { type: 'skill_data_write'; table: string; operation: 'insert' | 'update' | 'delete'; data: Record<string, unknown> }
   | { type: 'schedule_notification'; message: string; at: Date; recurring: string | null }
   | { type: 'analytics_event'; event: string; properties: Record<string, unknown> }
-  | { type: 'api_call'; toolName: string; endpoint: string; status: number; latencyMs: number };
+  | { type: 'api_call'; toolName: string; endpoint: string; status: number; latencyMs: number }
+  | { type: 'learning_proposal'; proposal: LearningProposalRef };
+
+export interface LearningProposalRef {
+  serviceName: string;
+  endpointCount: number;
+  skillCount: number;
+  sourceUrls: string[];
+}
 
 // ─── Supporting Types ──────────────────────────────────────────
 

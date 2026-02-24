@@ -10,11 +10,12 @@ import type { LLMGatewayPort } from '../bot-runtime/orchestrator/message-orchest
  * Handles failover: if the primary model fails, tries the fallback.
  *
  * Model routing strategy (from Spec #2):
- *   simple_qa        → cheapest model (Haiku-class)
- *   skill_execution  → mid-tier (Sonnet-class)
- *   skill_generation → mid-tier with strong instruction following
- *   complex_reasoning → strongest model (Opus-class)
- *   data_analysis    → mid-tier
+ *   simple_qa        → cheapest model (Haiku-class), no thinking
+ *   skill_execution  → mid-tier (Sonnet-class), thinking enabled (5k budget)
+ *   skill_generation → mid-tier, thinking enabled (5k budget)
+ *   complex_reasoning → strongest model (Opus-class), thinking enabled (10k budget)
+ *   data_analysis    → mid-tier, thinking enabled (5k budget)
+ *   doc_extraction   → mid-tier, thinking enabled (8k budget)
  */
 
 const DEFAULT_MAX_TOKENS = 2048;
@@ -51,7 +52,8 @@ export class LLMGateway implements LLMGatewayPort {
     route: ModelRoute,
     taskType: string,
   ): Promise<LLMResponse> {
-    const request = toProviderRequest(prompt, route.primary.model);
+    // Primary request uses per-route thinking config and maxTokens
+    const request = toProviderRequest(prompt, route.primary.model, route);
 
     // Try primary
     const primaryProvider = this.providers.get(route.primary.provider);
@@ -68,7 +70,7 @@ export class LLMGateway implements LLMGatewayPort {
       }
     }
 
-    // Try fallback
+    // Try fallback — no thinking (graceful degradation to OpenAI etc.)
     if (route.fallback) {
       const fallbackProvider = this.providers.get(route.fallback.provider);
       if (fallbackProvider?.isAvailable()) {
@@ -90,14 +92,15 @@ export class LLMGateway implements LLMGatewayPort {
   }
 }
 
-function toProviderRequest(prompt: Prompt, model: string): ProviderRequest {
+function toProviderRequest(prompt: Prompt, model: string, route?: ModelRoute): ProviderRequest {
   return {
     model,
     system: prompt.system,
     messages: prompt.messages,
     tools: prompt.tools,
-    maxTokens: DEFAULT_MAX_TOKENS,
+    maxTokens: route?.maxTokens ?? DEFAULT_MAX_TOKENS,
     temperature: DEFAULT_TEMPERATURE,
+    thinking: route?.thinking ?? undefined,
   };
 }
 
@@ -108,6 +111,7 @@ function toLLMResponse(result: import('./types.js').ProviderResponse, latencyMs:
     model: result.model,
     usage: result.usage,
     latencyMs,
+    thinkingSummary: result.thinkingSummary,
   };
 }
 
@@ -116,6 +120,14 @@ function toLLMResponse(result: import('./types.js').ProviderResponse, latencyMs:
 /**
  * Default model routing configuration.
  * Uses Anthropic as primary, OpenAI as fallback.
+ *
+ * Thinking budgets are tuned per task type:
+ * - simple_qa: no thinking (wasteful for quick Q&A)
+ * - skill_execution: moderate thinking (plan tool calls)
+ * - skill_generation: moderate thinking (design good skill defs)
+ * - complex_reasoning: high thinking (maximum reasoning depth)
+ * - data_analysis: moderate thinking
+ * - doc_extraction: high thinking (complex API doc analysis)
  */
 export function defaultModelRoutes(): ModelRoute[] {
   return [
@@ -123,26 +135,42 @@ export function defaultModelRoutes(): ModelRoute[] {
       taskType: 'simple_qa',
       primary: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
       fallback: { provider: 'openai', model: 'gpt-4o-mini' },
+      // No thinking — fast and cheap
     },
     {
       taskType: 'skill_execution',
       primary: { provider: 'anthropic', model: 'claude-sonnet-4-5-20250929' },
       fallback: { provider: 'openai', model: 'gpt-4o' },
+      thinking: { type: 'enabled', budgetTokens: 5_000 },
+      maxTokens: 8_192,
     },
     {
       taskType: 'skill_generation',
       primary: { provider: 'anthropic', model: 'claude-sonnet-4-5-20250929' },
       fallback: { provider: 'openai', model: 'gpt-4o' },
+      thinking: { type: 'enabled', budgetTokens: 5_000 },
+      maxTokens: 8_192,
     },
     {
       taskType: 'complex_reasoning',
       primary: { provider: 'anthropic', model: 'claude-opus-4-6' },
       fallback: { provider: 'anthropic', model: 'claude-sonnet-4-5-20250929' },
+      thinking: { type: 'enabled', budgetTokens: 10_000 },
+      maxTokens: 16_384,
     },
     {
       taskType: 'data_analysis',
       primary: { provider: 'anthropic', model: 'claude-sonnet-4-5-20250929' },
       fallback: { provider: 'openai', model: 'gpt-4o' },
+      thinking: { type: 'enabled', budgetTokens: 5_000 },
+      maxTokens: 8_192,
+    },
+    {
+      taskType: 'doc_extraction',
+      primary: { provider: 'anthropic', model: 'claude-sonnet-4-5-20250929' },
+      fallback: { provider: 'openai', model: 'gpt-4o' },
+      thinking: { type: 'enabled', budgetTokens: 8_000 },
+      maxTokens: 12_288,
     },
   ];
 }

@@ -4,15 +4,17 @@ A personal AI backend that learns new skills through conversation. Each user get
 
 Built for a managed iOS app where non-technical users create AI assistants that get smarter over time.
 
-> **Status**: Building in public. Core runtime works, tool execution works, auto-learning is next.
+> **Status**: Building in public. Extended thinking, web research, and auto-learning are live.
 
 ## What it does
 
 1. **You chat with your bot.** It understands your intent using a two-pass skill matcher (fast keyword match, then LLM fallback).
 2. **Skills handle specific tasks.** "New order: Maria, chocolate cake, Saturday" triggers the Order Tracker skill, which stores data, queries it later, and formats responses.
 3. **If no skill matches, the bot proposes one.** "Can you track my inventory?" → the bot suggests creating an Inventory Tracker, asks clarifying questions, and generates the skill.
-4. **Bots call external APIs.** Register a tool (Canva, Stripe, etc.), and the bot calls it during skill execution with encrypted credentials.
-5. **Memory persists across sessions.** The bot extracts facts from conversation ("your bakery is called Sweet Crumb") and uses them as context.
+4. **Bots learn new integrations.** Say "Learn how to use Stripe" and the bot researches the API docs, proposes tools and skills, and asks if you want to set it up.
+5. **Bots call external APIs.** Register a tool (Canva, Stripe, etc.), and the bot calls it during skill execution with encrypted credentials.
+6. **Extended thinking.** Complex tasks get reasoning time via Claude's extended thinking — the bot plans before it answers.
+7. **Memory persists across sessions.** The bot extracts facts from conversation ("your bakery is called Sweet Crumb") and uses them as context.
 
 ## Architecture
 
@@ -28,10 +30,10 @@ Built for a managed iOS app where non-technical users create AI assistants that 
 │  │  Skill   │ │  Prompt  │ │   LLM    │ │  Skill    │  │
 │  │ Matcher  │ │ Composer │ │ Gateway  │ │ Proposer  │  │
 │  └──────────┘ └──────────┘ └──────────┘ └───────────┘  │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐                │
-│  │ Memory   │ │ Response │ │   Tool   │                │
-│  │Extractor │ │Processor │ │Execution │                │
-│  └──────────┘ └──────────┘ └──────────┘                │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
+│  │ Memory   │ │ Response │ │   Tool   │ │    Web    │  │
+│  │Extractor │ │Processor │ │Execution │ │ Research  │  │
+│  └──────────┘ └──────────┘ └──────────┘ └───────────┘  │
 ├─────────────────────────────────────────────────────────┤
 │  Postgres (data)  │  Redis (cache)  │  LLM Providers   │
 └─────────────────────────────────────────────────────────┘
@@ -59,6 +61,13 @@ src/
 ├── tool-execution/         # External API calls
 │   ├── credential-vault.ts # AES-256-GCM encryption for API keys
 │   └── http-executor.ts    # Sandboxed HTTP client (SSRF protection)
+├── web-research/           # Auto-learning pipeline
+│   ├── learning-detector.ts # Regex-based intent detection
+│   ├── brave-search.ts     # Brave Search API client
+│   ├── page-fetcher.ts     # HTML → text content extraction
+│   ├── doc-analyzer.ts     # LLM-powered API doc analysis
+│   ├── proposal-builder.ts # Generate tool + skill proposals
+│   └── learning-flow.ts    # End-to-end orchestration
 ├── database/               # Postgres pool, migrations, repositories
 ├── cache/                  # Redis client + cache-first data loading
 ├── cli/                    # Interactive terminal chat (dev/debug)
@@ -86,6 +95,7 @@ docker compose up -d
 # Configure environment
 cp .env.example .env
 # Edit .env — add your ANTHROPIC_API_KEY and/or OPENAI_API_KEY
+# For auto-learning: add BRAVE_SEARCH_API_KEY (https://api.search.brave.com/)
 
 # Run database migrations
 npm run db:migrate
@@ -169,6 +179,33 @@ When the user asks for something no skill handles, the bot can propose creating 
 - Respects recent dismissals (won't re-propose something you said "no thanks" to)
 - Asks clarifying questions before creating
 
+### Web research + auto-learning
+
+Say "Learn how to use Stripe" and the bot:
+
+1. **Detects the intent** — regex patterns match learning phrases with confidence scoring (0.6–0.95)
+2. **Searches the web** — Brave Search API finds API documentation pages
+3. **Reads the docs** — fetches and extracts text from the top results
+4. **Analyzes with LLM** — Claude reads the docs and extracts endpoints, auth method, and base URL
+5. **Builds proposals** — generates a tool registration + skill proposals for the user to approve
+
+For vague intents like "learn how to tell time", the bot asks for clarification instead of diving into a full research flow.
+
+### Extended thinking
+
+Complex tasks get reasoning time via Claude's extended thinking API. The LLM gateway assigns thinking budgets per task type:
+
+| Task Type | Thinking | Budget Tokens | Max Tokens |
+|-----------|----------|---------------|------------|
+| `simple_qa` | off | — | 2,048 |
+| `skill_execution` | enabled | 5,000 | 8,192 |
+| `skill_generation` | enabled | 5,000 | 8,192 |
+| `complex_reasoning` | enabled | 10,000 | 16,384 |
+| `data_analysis` | enabled | 5,000 | 8,192 |
+| `doc_extraction` | enabled | 8,000 | 12,288 |
+
+Thinking blocks are parsed from the API response and summarized in the CLI. Fallback providers (e.g., OpenAI) gracefully skip thinking — no errors, just standard completion.
+
 ## Environment variables
 
 ```bash
@@ -183,6 +220,9 @@ OPENAI_API_KEY=sk-...
 # Tool execution (required if using external API integrations)
 KILO_CREDENTIAL_KEY=        # 64-char hex string (32 bytes) for AES-256-GCM
                             # Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+# Web research (required for auto-skill learning)
+BRAVE_SEARCH_API_KEY=       # Get one at https://api.search.brave.com/
 
 # Optional
 PORT=3000
@@ -240,7 +280,7 @@ npm run test:coverage # With coverage report
 npm run typecheck     # TypeScript type checking
 ```
 
-162 tests across 12 test files. All unit tests — no database or network required.
+~299 tests across 21 test files. All unit tests — no database or network required.
 
 ## Database migrations
 
@@ -262,7 +302,8 @@ npm run db:migrate
 - [x] Multi-bot management with per-bot isolation
 - [x] Soul system (structured 5-layer personality)
 - [x] Tool execution (external API calls with encrypted credentials)
-- [ ] Web research + auto-skill creation (bot reads API docs, proposes skills)
+- [x] Web research + auto-skill learning (bot reads API docs, proposes tools + skills)
+- [x] Extended thinking (per-task-type reasoning budgets via Claude API)
 - [ ] iOS app (SwiftUI client)
 - [ ] Knowledge store (RAG with document upload)
 - [ ] Real-time streaming responses

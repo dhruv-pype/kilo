@@ -2,10 +2,16 @@ import type { LLMProvider, ProviderRequest, ProviderResponse } from '../types.js
 import { LLMError, LLMTimeoutError } from '../../common/errors/index.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const THINKING_TIMEOUT_MS = 60_000;
+const THINKING_SUMMARY_MAX_CHARS = 500;
 
 /**
  * Anthropic provider — calls the Claude API.
  * Uses the Messages API (https://docs.anthropic.com/claude/reference/messages_post)
+ *
+ * Supports extended thinking: when `request.thinking` is set, the provider
+ * includes the `thinking` parameter, omits `temperature`, and parses
+ * thinking blocks from the response.
  */
 export class AnthropicProvider implements LLMProvider {
   readonly name = 'anthropic';
@@ -22,35 +28,57 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   async complete(request: ProviderRequest): Promise<ProviderResponse> {
-    const body = {
+    const body: Record<string, unknown> = {
       model: request.model,
       max_tokens: request.maxTokens,
-      temperature: request.temperature,
       system: request.system,
       messages: request.messages.map((m) => ({
         role: m.role,
         content: m.content,
       })),
-      ...(request.tools.length > 0 ? {
-        tools: request.tools.map((t) => ({
-          name: t.name,
-          description: t.description,
-          input_schema: t.parameters,
-        })),
-      } : {}),
     };
 
+    // Thinking and temperature are mutually exclusive (Anthropic constraint)
+    if (request.thinking) {
+      if (request.thinking.type === 'enabled') {
+        body.thinking = { type: 'enabled', budget_tokens: request.thinking.budgetTokens };
+      } else {
+        body.thinking = { type: 'adaptive' };
+      }
+      // temperature MUST NOT be sent when thinking is enabled
+    } else {
+      body.temperature = request.temperature;
+    }
+
+    if (request.tools.length > 0) {
+      body.tools = request.tools.map((t: { name: string; description: string; parameters: Record<string, unknown> }) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.parameters,
+      }));
+    }
+
+    // Build headers
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-api-key': this.apiKey,
+      'anthropic-version': '2023-06-01',
+    };
+
+    // Interleaved thinking with tools requires a beta header
+    if (request.thinking && request.tools.length > 0) {
+      headers['anthropic-beta'] = 'interleaved-thinking-2025-05-14';
+    }
+
+    // Thinking requests get a longer timeout
+    const timeoutMs = request.thinking ? THINKING_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(`${this.baseUrl}/v1/messages`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.apiKey,
-          'anthropic-version': '2023-06-01',
-        },
+        headers,
         body: JSON.stringify(body),
         signal: controller.signal,
       });
@@ -68,7 +96,7 @@ export class AnthropicProvider implements LLMProvider {
       return mapAnthropicResponse(data, request.model);
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
-        throw new LLMTimeoutError(this.name, request.model, DEFAULT_TIMEOUT_MS);
+        throw new LLMTimeoutError(this.name, request.model, timeoutMs);
       }
       if (err instanceof LLMError) throw err;
       throw new LLMError(
@@ -93,11 +121,13 @@ interface AnthropicResponse {
 
 type AnthropicContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> };
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'thinking'; thinking: string; signature: string };
 
 function mapAnthropicResponse(data: AnthropicResponse, requestModel: string): ProviderResponse {
   let content = '';
   const toolCalls: { toolName: string; arguments: Record<string, unknown> }[] = [];
+  const thinkingBlocks: string[] = [];
 
   for (const block of data.content) {
     if (block.type === 'text') {
@@ -107,8 +137,15 @@ function mapAnthropicResponse(data: AnthropicResponse, requestModel: string): Pr
         toolName: block.name,
         arguments: block.input,
       });
+    } else if (block.type === 'thinking') {
+      thinkingBlocks.push(block.thinking);
     }
   }
+
+  // Produce a summary from thinking blocks (capped for display)
+  const thinkingSummary = thinkingBlocks.length > 0
+    ? thinkingBlocks.join('\n').slice(0, THINKING_SUMMARY_MAX_CHARS)
+    : undefined;
 
   return {
     content,
@@ -118,5 +155,6 @@ function mapAnthropicResponse(data: AnthropicResponse, requestModel: string): Pr
       completionTokens: data.usage.output_tokens,
     },
     model: data.model ?? requestModel,
+    thinkingSummary,
   };
 }

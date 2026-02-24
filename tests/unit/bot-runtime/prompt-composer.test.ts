@@ -223,4 +223,109 @@ describe('composeGeneralPrompt', () => {
     const result = composeGeneralPrompt(input);
     expect(result.tools).toHaveLength(0);
   });
+
+  it('includes CAPABILITIES section in general prompt', () => {
+    const input: GeneralCompositionInput = {
+      message: {
+        messageId: 'msg-1' as MessageId,
+        sessionId: 'sess-1' as SessionId,
+        botId: 'bot-1' as BotId,
+        userId: 'user-1' as UserId,
+        content: 'What can you do?',
+        attachments: [],
+        timestamp: new Date(),
+      },
+      conversationHistory: [],
+      memoryContext: [],
+      botConfig: { name: 'Bot', personality: '', context: '', soul: null },
+    };
+    const result = composeGeneralPrompt(input);
+    expect(result.system).toContain('CAPABILITIES:');
+    expect(result.system).toContain('learn new API integrations');
+    expect(result.system).toContain('propose and create new skills');
+    expect(result.system).toContain('remember facts from previous conversations');
+  });
+
+  it('includes skill summary when provided', () => {
+    const input: GeneralCompositionInput = {
+      message: {
+        messageId: 'msg-1' as MessageId,
+        sessionId: 'sess-1' as SessionId,
+        botId: 'bot-1' as BotId,
+        userId: 'user-1' as UserId,
+        content: 'Hello',
+        attachments: [],
+        timestamp: new Date(),
+      },
+      conversationHistory: [],
+      memoryContext: [],
+      botConfig: { name: 'Bot', personality: '', context: '', soul: null },
+      skillSummary: [
+        { name: 'Order Tracker', description: 'Track bakery orders' },
+        { name: 'Daily Report', description: 'Generate end-of-day summary' },
+      ],
+    };
+    const result = composeGeneralPrompt(input);
+    expect(result.system).toContain('YOUR CURRENT SKILLS:');
+    expect(result.system).toContain('Order Tracker: Track bakery orders');
+    expect(result.system).toContain('Daily Report: Generate end-of-day summary');
+  });
+
+  it('omits skill summary section when skillSummary is empty', () => {
+    const input: GeneralCompositionInput = {
+      message: {
+        messageId: 'msg-1' as MessageId,
+        sessionId: 'sess-1' as SessionId,
+        botId: 'bot-1' as BotId,
+        userId: 'user-1' as UserId,
+        content: 'Hello',
+        attachments: [],
+        timestamp: new Date(),
+      },
+      conversationHistory: [],
+      memoryContext: [],
+      botConfig: { name: 'Bot', personality: '', context: '', soul: null },
+      skillSummary: [],
+    };
+    const result = composeGeneralPrompt(input);
+    expect(result.system).not.toContain('YOUR CURRENT SKILLS:');
+  });
+
+  it('omits skill summary section when skillSummary is undefined', () => {
+    const input: GeneralCompositionInput = {
+      message: {
+        messageId: 'msg-1' as MessageId,
+        sessionId: 'sess-1' as SessionId,
+        botId: 'bot-1' as BotId,
+        userId: 'user-1' as UserId,
+        content: 'Hello',
+        attachments: [],
+        timestamp: new Date(),
+      },
+      conversationHistory: [],
+      memoryContext: [],
+      botConfig: { name: 'Bot', personality: '', context: '', soul: null },
+    };
+    const result = composeGeneralPrompt(input);
+    expect(result.system).not.toContain('YOUR CURRENT SKILLS:');
+  });
+
+  it('constraint mentions learning API integrations', () => {
+    const input: GeneralCompositionInput = {
+      message: {
+        messageId: 'msg-1' as MessageId,
+        sessionId: 'sess-1' as SessionId,
+        botId: 'bot-1' as BotId,
+        userId: 'user-1' as UserId,
+        content: 'Hello',
+        attachments: [],
+        timestamp: new Date(),
+      },
+      conversationHistory: [],
+      memoryContext: [],
+      botConfig: { name: 'Bot', personality: '', context: '', soul: null },
+    };
+    const result = composeGeneralPrompt(input);
+    expect(result.system).toContain('learning a new API integration');
+  });
 });
