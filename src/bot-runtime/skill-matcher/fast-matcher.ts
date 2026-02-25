@@ -65,6 +65,12 @@ function computeMatchScore(msgTokens: Set<string>, patternTokens: Set<string>): 
   // Pattern recall: how much of the pattern was found in the message
   const patternRecall = patternHits / patternTokens.size;
 
+  // ── Key guard: require ALL pattern keywords to appear in the message ──
+  // Partial matches are too noisy. E.g. pattern "what time" should not
+  // match a message that only contains "what" (like "what other skills?").
+  // If even one pattern keyword is missing, the intent doesn't match.
+  if (patternRecall < 1.0) return 0;
+
   // Message precision: how much of the message matches the pattern
   let msgHits = 0;
   for (const token of msgTokens) {

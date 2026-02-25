@@ -231,6 +231,7 @@ describe('detectLearningIntent', () => {
 
   describe('detectClarificationFollowUp', () => {
     const markedMessage = `${buildClarificationMarker('Tell Time')}I can do that! I'll search for an API.`;
+    const markedGoogleCalendar = `${buildClarificationMarker('Book Meetings For Me On My Google Calendar')}I can do that! I'll search for an API.`;
 
     it('detects "yes" as affirmative follow-up', () => {
       const result = detectClarificationFollowUp('Yes', markedMessage);
@@ -280,6 +281,12 @@ describe('detectLearningIntent', () => {
       const result = detectClarificationFollowUp('just find a free time API', markedMessage);
       expect(result).not.toBeNull();
       expect(result!.searchQuery).toBe('just find a free time API');
+    });
+
+    it('infers known service names for affirmative replies to capability prompts', () => {
+      const result = detectClarificationFollowUp('yes', markedGoogleCalendar);
+      expect(result).not.toBeNull();
+      expect(result!.searchQuery).toBe('Google Calendar API');
     });
   });
 

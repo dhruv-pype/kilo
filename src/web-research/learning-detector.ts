@@ -172,7 +172,12 @@ export function detectClarificationFollowUp(
   // Affirmative patterns — user confirming they want to proceed
   const affirmative = /^(yes|yeah|yep|sure|ok|okay|go ahead|do it|please|search|find|look|try|absolutely|definitely|y)\b/i;
   if (affirmative.test(trimmed)) {
-    // They said yes — search for the original capability
+    // They said yes. If the original capability contains a known service name,
+    // prefer that for better search precision (e.g. "book meetings on my google calendar").
+    const inferredService = extractLikelyServiceFromCapability(capability);
+    if (inferredService) {
+      return { searchQuery: `${inferredService} API` };
+    }
     return { searchQuery: `${capability} API` };
   }
 
@@ -181,6 +186,29 @@ export function detectClarificationFollowUp(
     if (trimmed.split(/\s+/).length <= 8) {
       return { searchQuery: `${userMessage.trim()} API` };
     }
+  }
+
+  return null;
+}
+
+function extractLikelyServiceFromCapability(capability: string): string | null {
+  const lower = capability.toLowerCase();
+
+  const knownServices: Array<{ pattern: RegExp; name: string }> = [
+    { pattern: /\bgoogle\s+calendar\b/, name: 'Google Calendar' },
+    { pattern: /\bgmail\b/, name: 'Gmail' },
+    { pattern: /\bgoogle\s+sheets\b/, name: 'Google Sheets' },
+    { pattern: /\bgoogle\s+drive\b/, name: 'Google Drive' },
+    { pattern: /\bslack\b/, name: 'Slack' },
+    { pattern: /\bnotion\b/, name: 'Notion' },
+    { pattern: /\btrello\b/, name: 'Trello' },
+    { pattern: /\bstripe\b/, name: 'Stripe' },
+    { pattern: /\bgithub\b/, name: 'GitHub' },
+    { pattern: /\bcanva\b/, name: 'Canva' },
+  ];
+
+  for (const svc of knownServices) {
+    if (svc.pattern.test(lower)) return svc.name;
   }
 
   return null;

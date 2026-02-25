@@ -121,4 +121,43 @@ describe('fastMatch', () => {
     expect(result!.confidence).toBeGreaterThan(0);
     expect(result!.confidence).toBeLessThanOrEqual(1);
   });
+
+  // ─── 100% pattern recall: prevents false positives ─────────────
+
+  it('does not match when only some pattern keywords appear (partial overlap)', () => {
+    // "what time" pattern should NOT match "what other skills do you have"
+    // because "time" is missing from the message
+    const timeSkill = makeSkill('Time', ['what time', 'current time']);
+    const result = fastMatch('what other skills do you have?', [timeSkill]);
+    expect(result).toBeNull();
+  });
+
+  it('does not match when message shares only one keyword with pattern', () => {
+    // "time now" should NOT match "where am I right now"
+    // because "time" is missing — only "now" overlaps
+    const timeSkill = makeSkill('Time', ['time now']);
+    const result = fastMatch('where am I right now?', [timeSkill]);
+    expect(result).toBeNull();
+  });
+
+  it('does not match ambiguous single-word messages to multi-keyword patterns', () => {
+    // "Day?" should not match "what day is it" because "what" is missing
+    const timeSkill = makeSkill('Time', ['what day is it', 'what time']);
+    const result = fastMatch('Day?', [timeSkill]);
+    expect(result).toBeNull();
+  });
+
+  it('matches when ALL pattern keywords appear in the message', () => {
+    const timeSkill = makeSkill('Time', ['what time']);
+    const result = fastMatch('what time is it in Tokyo?', [timeSkill]);
+    expect(result).not.toBeNull();
+    expect(result!.skill.name).toBe('Time');
+  });
+
+  it('does not match unrelated messages that share common words like "what"', () => {
+    const timeSkill = makeSkill('Time', ['what time', 'what date']);
+    const dateSkill = makeSkill('Date Math', ['days until', 'how many days']);
+    const result = fastMatch('what can you help me with?', [timeSkill, dateSkill]);
+    expect(result).toBeNull();
+  });
 });

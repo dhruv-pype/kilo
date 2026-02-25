@@ -97,6 +97,9 @@ cp .env.example .env
 # Edit .env — add your ANTHROPIC_API_KEY and/or OPENAI_API_KEY
 # For auto-learning: add BRAVE_SEARCH_API_KEY (https://api.search.brave.com/)
 
+# Validate env vars (values redacted; prints only set/missing/invalid)
+npm run env:check
+
 # Run database migrations
 npm run db:migrate
 
@@ -231,6 +234,14 @@ NODE_ENV=development
 REDIS_CACHE_TTL_SECONDS=3600
 JWT_SECRET=change-me-in-production
 ```
+
+Run `npm run env:check` before starting the app. It reports only `set/missing/invalid` and never prints secret values.
+
+## Secret safety
+
+- Never paste real keys into logs, screenshots, or terminal output.
+- If keys are exposed, rotate them immediately at the provider.
+- Keep `.env` local and out of commits.
 
 ## API endpoints
 

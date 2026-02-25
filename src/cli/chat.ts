@@ -226,6 +226,17 @@ async function main() {
     process.exit(1);
   }
 
+  if (!process.env.BRAVE_SEARCH_API_KEY) {
+    console.log(`${DIM}Warning: BRAVE_SEARCH_API_KEY not set. Web research/auto-learning will be unavailable.${RESET}`);
+  }
+
+  const credentialKey = process.env.KILO_CREDENTIAL_KEY;
+  if (!credentialKey) {
+    console.log(`${DIM}Warning: KILO_CREDENTIAL_KEY not set. Tool credential encryption will fail if you register tools.${RESET}`);
+  } else if (!/^[a-fA-F0-9]{64}$/.test(credentialKey)) {
+    console.log(`${DIM}Warning: KILO_CREDENTIAL_KEY is invalid. Expected a 64-character hex string.${RESET}`);
+  }
+
   // Init infrastructure
   console.log(`${DIM}Connecting to Postgres...${RESET}`);
   initPool(dbUrl);
