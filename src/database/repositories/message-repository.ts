@@ -4,6 +4,10 @@ import type { Message, UserMessage } from '../../common/types/message.js';
 import { messageId } from '../../common/types/ids.js';
 import type { BotId, MessageId, SessionId } from '../../common/types/ids.js';
 
+// UUID v4 format check — built-in skill IDs like "builtin-time" aren't valid UUIDs
+// and can't be stored in the messages.skill_id column (UUID FK → skills table).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function insertMessage(msg: {
   sessionId: string;
   botId: string;
@@ -13,6 +17,9 @@ export async function insertMessage(msg: {
   skillId?: string | null;
 }): Promise<Message> {
   const id = uuidv4();
+  // Only persist skill_id if it's a real UUID (user-created skills).
+  // Built-in skill IDs (e.g. "builtin-time") are not in the skills table.
+  const persistableSkillId = msg.skillId && UUID_RE.test(msg.skillId) ? msg.skillId : null;
   const result = await query<MessageRow>(
     `INSERT INTO messages (message_id, session_id, bot_id, role, content, attachments, skill_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -24,7 +31,7 @@ export async function insertMessage(msg: {
       msg.role,
       msg.content,
       JSON.stringify(msg.attachments ?? []),
-      msg.skillId ?? null,
+      persistableSkillId,
     ],
   );
 
