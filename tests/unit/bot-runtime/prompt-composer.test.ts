@@ -241,6 +241,7 @@ describe('composeGeneralPrompt', () => {
     };
     const result = composeGeneralPrompt(input);
     expect(result.system).toContain('CAPABILITIES:');
+    expect(result.system).toContain('built-in skills for common tasks');
     expect(result.system).toContain('internet access via Brave Search');
     expect(result.system).toContain('propose and create new skills');
     expect(result.system).toContain('remember facts from previous conversations');

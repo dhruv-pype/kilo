@@ -34,6 +34,11 @@ import {
 } from '../../web-research/learning-detector.js';
 import { executeLearningFlow } from '../../web-research/learning-flow.js';
 import { WebResearchError } from '../../common/errors/index.js';
+import {
+  getBuiltInSkills,
+  isBuiltInSkill,
+  getBuiltInHandler,
+} from '../../skill-engine/builtin-skills/index.js';
 
 /**
  * LLM Gateway interface — the Orchestrator depends on this abstraction,
@@ -84,10 +89,13 @@ export class MessageOrchestrator {
     const sideEffects: SideEffect[] = [];
 
     // 1. Load bot config and skills (cache-first — Spec #4)
-    const [botConfig, skills] = await Promise.all([
+    const [botConfig, dbSkills] = await Promise.all([
       this.data.loadBotConfig(botId as string),
       this.data.loadSkills(botId as string),
     ]);
+
+    // Merge built-in skills (prepend so they match first for common queries)
+    const skills = [...getBuiltInSkills(), ...dbSkills];
 
     // 2a. Check if user is responding to a previous learning clarification
     const history = await this.data.loadConversationHistory(botId as string, sessionId as string, 2);
@@ -145,8 +153,12 @@ export class MessageOrchestrator {
 
     let response: ProcessedResponse;
 
-    if (skillMatch) {
-      // 3a. Skill matched — selective context loading + LLM call
+    if (skillMatch && isBuiltInSkill(skillMatch.skill)) {
+      // 3a. Built-in skill matched — direct execution, no LLM call
+      const handler = getBuiltInHandler(skillMatch.skill.skillId as string);
+      response = handler!(message.content);
+    } else if (skillMatch) {
+      // 3b. User skill matched — selective context loading + LLM call
       response = await this.handleSkillMatch(
         skillMatch,
         message,

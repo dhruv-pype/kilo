@@ -3,6 +3,7 @@ import { MessageOrchestrator } from '@bot-runtime/orchestrator/message-orchestra
 import type { LLMGatewayPort, DataLoaderPort } from '@bot-runtime/orchestrator/message-orchestrator.js';
 import type { BotId, MessageId, SessionId, SkillId, UserId } from '@common/types/ids.js';
 import type { SkillDefinition } from '@common/types/skill.js';
+import { getBuiltInSkills } from '../../../src/skill-engine/builtin-skills/index.js';
 
 // ─── Mock Factory ──────────────────────────────────────────────
 
@@ -63,6 +64,7 @@ function mockDataLoader(skills: SkillDefinition[] = []): DataLoaderPort {
     loadSkillData: vi.fn().mockResolvedValue({ tableName: '', rows: [], totalCount: 0 }),
     loadTableSchemas: vi.fn().mockResolvedValue([]),
     loadRecentDismissals: vi.fn().mockResolvedValue([]),
+    loadTools: vi.fn().mockResolvedValue([]),
   };
 }
 
@@ -211,5 +213,49 @@ describe('MessageOrchestrator', () => {
 
     const notification = result.sideEffects.find((e) => e.type === 'schedule_notification');
     expect(notification).toBeDefined();
+  });
+
+  // ─── Built-in Skill Tests ─────────────────────────────────────
+
+  it('routes built-in skill without calling LLM', async () => {
+    const llm = mockLLM();
+    const data = mockDataLoader([]); // no DB skills — built-ins are merged automatically
+    const orchestrator = new MessageOrchestrator(llm, data);
+
+    const result = await orchestrator.process(makeInput('what time is it?'));
+
+    // Built-in handler should respond directly
+    expect(result.response.skillId).toBe('builtin-time');
+    expect(result.response.content).toMatch(/It's \*\*/);
+    // LLM should NOT be called for built-in skills
+    expect(llm.complete).not.toHaveBeenCalled();
+  });
+
+  it('built-in skills are merged with DB skills for matching', async () => {
+    const skills = [makeSkill('Order Tracker', ['new order'])];
+    const llm = mockLLM();
+    const data = mockDataLoader(skills);
+    const orchestrator = new MessageOrchestrator(llm, data);
+
+    // This should match the built-in time skill, not the order tracker
+    const result = await orchestrator.process(makeInput('what time is it?'));
+    expect(result.response.skillId).toBe('builtin-time');
+
+    // This should match the user's order tracker skill
+    const result2 = await orchestrator.process(makeInput('new order for Maria'));
+    expect(result2.response.skillId).toBe('skill-Order Tracker');
+    expect(llm.complete).toHaveBeenCalledOnce(); // only for the order
+  });
+
+  it('non-built-in skill still goes through LLM flow', async () => {
+    const skills = [makeSkill('Order Tracker', ['new order'])];
+    const llm = mockLLM();
+    const data = mockDataLoader(skills);
+    const orchestrator = new MessageOrchestrator(llm, data);
+
+    const result = await orchestrator.process(makeInput('new order for Maria'));
+
+    expect(result.response.skillId).toBe('skill-Order Tracker');
+    expect(llm.complete).toHaveBeenCalledOnce();
   });
 });

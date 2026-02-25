@@ -157,6 +157,8 @@ export function composeGeneralPrompt(input: GeneralCompositionInput): Prompt {
 
   // Capabilities — so the bot knows what it can do
   systemParts.push('\nCAPABILITIES:');
+  systemParts.push('- You have built-in skills for common tasks: current time/date, date calculations, and');
+  systemParts.push('  generating UUIDs/passwords. These work instantly without any API setup.');
   systemParts.push('- You have internet access via Brave Search. You can search the web, read API documentation,');
   systemParts.push('  and learn new integrations. When a user asks you to learn something, you research it online.');
   systemParts.push('- To trigger learning, the user can say "Learn how to use [ServiceName]" and you\'ll');
