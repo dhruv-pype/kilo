@@ -26,7 +26,12 @@ import { executeHttpTool } from '../../tool-execution/http-executor.js';
 import { processResponse } from '../response-processor/response-processor.js';
 import { extractMemoryFacts } from '../memory-extractor/memory-extractor.js';
 import { evaluateForProposal } from '../skill-proposer/skill-proposer.js';
-import { detectLearningIntent, looksLikeServiceName } from '../../web-research/learning-detector.js';
+import {
+  detectLearningIntent,
+  looksLikeServiceName,
+  detectClarificationFollowUp,
+  buildClarificationMarker,
+} from '../../web-research/learning-detector.js';
 import { executeLearningFlow } from '../../web-research/learning-flow.js';
 import { WebResearchError } from '../../common/errors/index.js';
 
@@ -84,7 +89,28 @@ export class MessageOrchestrator {
       this.data.loadSkills(botId as string),
     ]);
 
-    // 2. Check for learning intent (fast regex — <1ms, runs before skill matching)
+    // 2a. Check if user is responding to a previous learning clarification
+    const history = await this.data.loadConversationHistory(botId as string, sessionId as string, 2);
+    const lastBotMsg = history.filter((m) => m.role === 'assistant').at(-1);
+    const followUp = detectClarificationFollowUp(message.content, lastBotMsg?.content ?? null);
+    if (followUp) {
+      // User confirmed a clarification — trigger learning with the search query
+      const learningResult = await this.handleLearningFlow(
+        message,
+        botId as string,
+        followUp.searchQuery,
+        sideEffects,
+      );
+
+      const memoryFacts = extractMemoryFacts(message.content);
+      if (memoryFacts.length > 0) {
+        sideEffects.push({ type: 'memory_write', facts: memoryFacts });
+      }
+
+      return { response: learningResult, sideEffects };
+    }
+
+    // 2b. Check for learning intent (fast regex — <1ms, runs before skill matching)
     const learningIntent = detectLearningIntent(message.content);
     if (learningIntent && learningIntent.confidence >= 0.7) {
       // High confidence → full learning flow
@@ -536,13 +562,17 @@ function formatLearningProposal(proposal: LearningProposal): ProcessedResponse {
 
 /**
  * Build a clarification response for medium-confidence learning intents.
+ * Embeds a hidden marker so follow-up detection can continue the flow.
+ *
  * If the name looks like a service → ask if they want to research it.
- * If the name looks like a capability → ask which API/service to look into.
+ * If the name looks like a capability → offer to search for a relevant API.
  */
 function buildLearningClarification(serviceName: string): ProcessedResponse {
+  const marker = buildClarificationMarker(serviceName);
+
   if (looksLikeServiceName(serviceName)) {
     return {
-      content: `I can learn how to use **${serviceName}**! Want me to research its API docs and set up an integration?`,
+      content: `${marker}I can learn how to use **${serviceName}**! Want me to search the web for its API docs and set up an integration?`,
       format: 'text',
       structuredData: null,
       skillId: null,
@@ -551,10 +581,10 @@ function buildLearningClarification(serviceName: string): ProcessedResponse {
   }
 
   return {
-    content: `I can learn that! Which API or service should I look into? For example, if you want me to ${serviceName.toLowerCase()}, I could look into a relevant API.`,
+    content: `${marker}I can do that! I'll search the web for a free API that can **${serviceName.toLowerCase()}**. Want me to go ahead and look?`,
     format: 'text',
     structuredData: null,
     skillId: null,
-    suggestedActions: ['Tell me more', 'Never mind'],
+    suggestedActions: ['Yes, search for it', 'No thanks'],
   };
 }

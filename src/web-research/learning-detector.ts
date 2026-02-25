@@ -114,6 +114,78 @@ export function looksLikeServiceName(name: string): boolean {
   return true;
 }
 
+// ─── Clarification Marker ────────────────────────────────────────
+// Clarification responses contain this marker so follow-up detection works.
+export const CLARIFICATION_MARKER = '<!-- learning-clarification:';
+
+/**
+ * Build a marker string to embed in clarification responses.
+ * Contains the original capability so follow-up detection can extract it.
+ */
+export function buildClarificationMarker(capability: string): string {
+  return `${CLARIFICATION_MARKER}${capability} -->`;
+}
+
+/**
+ * Detect if the user is responding affirmatively to a previous learning clarification.
+ *
+ * Checks:
+ * 1. The last assistant message contains a clarification marker
+ * 2. The user's message is affirmative ("yes", "sure", "do it", "search for it")
+ *    OR contains a service name (e.g., "try WorldTimeAPI")
+ *
+ * Returns the capability/service name to search for, or null.
+ */
+export function detectClarificationFollowUp(
+  userMessage: string,
+  lastAssistantMessage: string | null,
+): { searchQuery: string } | null {
+  if (!lastAssistantMessage) return null;
+
+  // Check if the last message was a clarification
+  const markerIdx = lastAssistantMessage.indexOf(CLARIFICATION_MARKER);
+  if (markerIdx === -1) return null;
+
+  // Extract the capability from the marker
+  const start = markerIdx + CLARIFICATION_MARKER.length;
+  const end = lastAssistantMessage.indexOf(' -->', start);
+  if (end === -1) return null;
+  const capability = lastAssistantMessage.slice(start, end).trim();
+  if (!capability) return null;
+
+  const trimmed = userMessage.trim().toLowerCase();
+
+  // Negative patterns — user declining
+  const negative = /^(no|nope|nah|never\s*mind|cancel|stop|forget)\b/i;
+  if (negative.test(trimmed)) return null;
+
+  // Check for specific API/service mentions FIRST — more specific than bare affirmatives.
+  // e.g., "try the WorldTimeAPI service" should use the user's reply verbatim,
+  // not collapse to the generic "{capability} API" from the affirmative branch.
+  if (trimmed.length > 0 && trimmed.length < 100) {
+    const mentionsApi = /\b(api|service)\b/i.test(trimmed);
+    if (mentionsApi) {
+      return { searchQuery: userMessage.trim() };
+    }
+  }
+
+  // Affirmative patterns — user confirming they want to proceed
+  const affirmative = /^(yes|yeah|yep|sure|ok|okay|go ahead|do it|please|search|find|look|try|absolutely|definitely|y)\b/i;
+  if (affirmative.test(trimmed)) {
+    // They said yes — search for the original capability
+    return { searchQuery: `${capability} API` };
+  }
+
+  // Short replies that aren't negative are likely service names or instructions to search
+  if (trimmed.length > 0 && trimmed.length < 100) {
+    if (trimmed.split(/\s+/).length <= 8) {
+      return { searchQuery: `${userMessage.trim()} API` };
+    }
+  }
+
+  return null;
+}
+
 /**
  * Clean up the extracted service name.
  * Strips trailing "API", "integration", "service" words.

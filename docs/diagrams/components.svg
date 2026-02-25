@@ -1,84 +1,172 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="980" viewBox="0 0 1560 980">
   <defs>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L9,3 L0,6 z" fill="#1a1a1a" />
+    <style>
+      .title { font: 700 24px Arial, sans-serif; fill: #111827; }
+      .groupTitle { font: 700 16px Arial, sans-serif; fill: #111827; }
+      .node { font: 600 12px Arial, sans-serif; fill: #1f2937; }
+      .edge { font: 11px Arial, sans-serif; fill: #374151; }
+      .group { fill: #ffffff; stroke: #9ca3af; stroke-width: 1.4; rx: 10; }
+      .box { fill: #f9fafb; stroke: #374151; stroke-width: 1.2; rx: 8; }
+      .arrow { stroke: #111827; stroke-width: 1.3; marker-end: url(#arrowHead); }
+      .dashed { stroke: #4b5563; stroke-width: 1.2; stroke-dasharray: 4 3; marker-end: url(#arrowHeadGray); }
+    </style>
+    <marker id="arrowHead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#111827" />
+    </marker>
+    <marker id="arrowHeadGray" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#4b5563" />
     </marker>
   </defs>
-  <rect x="0" y="0" width="1200" height="800" fill="#ffffff" />
-  <style>
-    .title { font: 700 20px 'Helvetica Neue', Arial, sans-serif; fill: #111; }
-    .label { font: 600 14px 'Helvetica Neue', Arial, sans-serif; fill: #111; }
-    .small { font: 12px 'Helvetica Neue', Arial, sans-serif; fill: #333; }
-    .box { fill: #f3f4f6; stroke: #1f2937; stroke-width: 1.2; }
-    .group { fill: #ffffff; stroke: #d1d5db; stroke-width: 1.2; }
-    .arrow { stroke: #1f2937; stroke-width: 1.4; marker-end: url(#arrow); }
-  </style>
 
-  <text x="30" y="30" class="title">System / Component Diagram</text>
+  <rect width="1560" height="980" fill="#ffffff"/>
+  <text x="28" y="36" class="title">Kilo System Components (Current Architecture)</text>
 
   <!-- Client -->
-  <rect class="box" x="40" y="80" width="160" height="50" rx="6" />
-  <text class="label" x="120" y="110" text-anchor="middle">Client (Web/CLI)</text>
+  <rect x="40" y="80" width="180" height="64" class="box"/>
+  <text x="130" y="118" text-anchor="middle" class="node">Client (Web + CLI)</text>
 
-  <!-- API group -->
-  <rect class="group" x="250" y="60" width="260" height="160" rx="8" />
-  <text class="label" x="380" y="85" text-anchor="middle">API (Fastify)</text>
-  <rect class="box" x="270" y="100" width="220" height="45" rx="6" />
-  <text class="small" x="380" y="128" text-anchor="middle">/api/chat</text>
-  <rect class="box" x="270" y="150" width="220" height="45" rx="6" />
-  <text class="small" x="380" y="178" text-anchor="middle">Error Handler</text>
+  <!-- API layer -->
+  <rect x="260" y="60" width="300" height="220" class="group"/>
+  <text x="280" y="86" class="groupTitle">API Layer</text>
+  <rect x="286" y="104" width="248" height="52" class="box"/>
+  <text x="410" y="134" text-anchor="middle" class="node">Fastify Server + Middleware</text>
+  <rect x="286" y="170" width="248" height="44" class="box"/>
+  <text x="410" y="197" text-anchor="middle" class="node">chatRoutes (/api/chat)</text>
+  <rect x="286" y="224" width="248" height="44" class="box"/>
+  <text x="410" y="251" text-anchor="middle" class="node">bot/skill/tool/usage routes</text>
 
-  <!-- Runtime group -->
-  <rect class="group" x="550" y="60" width="320" height="240" rx="8" />
-  <text class="label" x="710" y="85" text-anchor="middle">Bot Runtime</text>
-  <rect class="box" x="570" y="100" width="280" height="45" rx="6" />
-  <text class="small" x="710" y="128" text-anchor="middle">MessageOrchestrator</text>
-  <rect class="box" x="570" y="150" width="130" height="45" rx="6" />
-  <text class="small" x="635" y="178" text-anchor="middle">SkillMatcher</text>
-  <rect class="box" x="720" y="150" width="130" height="45" rx="6" />
-  <text class="small" x="785" y="178" text-anchor="middle">PromptComposer</text>
-  <rect class="box" x="570" y="200" width="130" height="45" rx="6" />
-  <text class="small" x="635" y="228" text-anchor="middle">ResponseProcessor</text>
-  <rect class="box" x="720" y="200" width="130" height="45" rx="6" />
-  <text class="small" x="785" y="228" text-anchor="middle">SkillProposer</text>
+  <!-- Runtime -->
+  <rect x="600" y="60" width="370" height="420" class="group"/>
+  <text x="620" y="86" class="groupTitle">Bot Runtime</text>
+  <rect x="626" y="104" width="318" height="50" class="box"/>
+  <text x="785" y="134" text-anchor="middle" class="node">MessageOrchestrator</text>
 
-  <!-- Data group -->
-  <rect class="group" x="250" y="260" width="260" height="170" rx="8" />
-  <text class="label" x="380" y="285" text-anchor="middle">Data</text>
-  <rect class="box" x="270" y="300" width="220" height="45" rx="6" />
-  <text class="small" x="380" y="328" text-anchor="middle">Repositories</text>
-  <rect class="box" x="270" y="350" width="220" height="45" rx="6" />
-  <text class="small" x="380" y="378" text-anchor="middle">Redis Cache</text>
-  <rect class="box" x="270" y="400" width="220" height="45" rx="6" />
-  <text class="small" x="380" y="428" text-anchor="middle">Postgres</text>
+  <rect x="626" y="166" width="150" height="42" class="box"/>
+  <text x="701" y="192" text-anchor="middle" class="node">SkillMatcher</text>
+  <rect x="794" y="166" width="150" height="42" class="box"/>
+  <text x="869" y="192" text-anchor="middle" class="node">SkillProposer</text>
 
-  <!-- LLM group -->
-  <rect class="group" x="550" y="330" width="320" height="220" rx="8" />
-  <text class="label" x="710" y="355" text-anchor="middle">LLM Gateway</text>
-  <rect class="box" x="570" y="370" width="280" height="45" rx="6" />
-  <text class="small" x="710" y="398" text-anchor="middle">TrackedLLMGateway</text>
-  <rect class="box" x="570" y="420" width="130" height="45" rx="6" />
-  <text class="small" x="635" y="448" text-anchor="middle">LLMGateway</text>
-  <rect class="box" x="720" y="420" width="130" height="45" rx="6" />
-  <text class="small" x="785" y="448" text-anchor="middle">UsageTracker</text>
-  <rect class="box" x="570" y="470" width="130" height="45" rx="6" />
-  <text class="small" x="635" y="498" text-anchor="middle">Anthropic</text>
-  <rect class="box" x="720" y="470" width="130" height="45" rx="6" />
-  <text class="small" x="785" y="498" text-anchor="middle">OpenAI</text>
+  <rect x="626" y="218" width="150" height="42" class="box"/>
+  <text x="701" y="244" text-anchor="middle" class="node">PromptComposer</text>
+  <rect x="794" y="218" width="150" height="42" class="box"/>
+  <text x="869" y="244" text-anchor="middle" class="node">ResponseProcessor</text>
 
-  <!-- Tools -->
-  <rect class="group" x="900" y="60" width="260" height="170" rx="8" />
-  <text class="label" x="1030" y="85" text-anchor="middle">Tools</text>
-  <rect class="box" x="920" y="100" width="220" height="45" rx="6" />
-  <text class="small" x="1030" y="128" text-anchor="middle">Tool Registry</text>
-  <rect class="box" x="920" y="150" width="220" height="45" rx="6" />
-  <text class="small" x="1030" y="178" text-anchor="middle">HTTP Executor</text>
+  <rect x="626" y="270" width="150" height="42" class="box"/>
+  <text x="701" y="296" text-anchor="middle" class="node">MemoryExtractor</text>
+  <rect x="794" y="270" width="150" height="42" class="box"/>
+  <text x="869" y="296" text-anchor="middle" class="node">Tool Call Handler</text>
 
-  <!-- Arrows -->
-  <line class="arrow" x1="200" y1="105" x2="250" y2="120" />
-  <line class="arrow" x1="510" y1="120" x2="550" y2="120" />
-  <line class="arrow" x1="710" y1="145" x2="710" y2="330" />
-  <line class="arrow" x1="710" y1="300" x2="380" y2="300" />
-  <line class="arrow" x1="850" y1="390" x2="900" y2="150" />
-  <line class="arrow" x1="710" y1="250" x2="1030" y2="100" />
+  <rect x="626" y="322" width="318" height="42" class="box"/>
+  <text x="785" y="348" text-anchor="middle" class="node">Learning Intent Branch (detect + clarify)</text>
+
+  <rect x="626" y="374" width="318" height="42" class="box"/>
+  <text x="785" y="400" text-anchor="middle" class="node">Side Effects (memory/proposals/api-call)</text>
+
+  <!-- Web research -->
+  <rect x="1010" y="60" width="500" height="280" class="group"/>
+  <text x="1030" y="86" class="groupTitle">Web Research Subsystem</text>
+  <rect x="1036" y="104" width="212" height="42" class="box"/>
+  <text x="1142" y="130" text-anchor="middle" class="node">learning-flow</text>
+  <rect x="1268" y="104" width="212" height="42" class="box"/>
+  <text x="1374" y="130" text-anchor="middle" class="node">learning-detector</text>
+
+  <rect x="1036" y="158" width="212" height="42" class="box"/>
+  <text x="1142" y="184" text-anchor="middle" class="node">brave-search</text>
+  <rect x="1268" y="158" width="212" height="42" class="box"/>
+  <text x="1374" y="184" text-anchor="middle" class="node">page-fetcher</text>
+
+  <rect x="1036" y="212" width="212" height="42" class="box"/>
+  <text x="1142" y="238" text-anchor="middle" class="node">doc-analyzer (LLM)</text>
+  <rect x="1268" y="212" width="212" height="42" class="box"/>
+  <text x="1374" y="238" text-anchor="middle" class="node">proposal-builder</text>
+
+  <rect x="1036" y="266" width="444" height="42" class="box"/>
+  <text x="1258" y="292" text-anchor="middle" class="node">LearningProposal (tool proposal + skill proposals)</text>
+
+  <!-- LLM gateway -->
+  <rect x="600" y="520" width="430" height="250" class="group"/>
+  <text x="620" y="546" class="groupTitle">LLM Layer</text>
+  <rect x="626" y="564" width="378" height="42" class="box"/>
+  <text x="815" y="590" text-anchor="middle" class="node">TrackedLLMGateway</text>
+
+  <rect x="626" y="618" width="180" height="42" class="box"/>
+  <text x="716" y="644" text-anchor="middle" class="node">LLMGateway (routing)</text>
+  <rect x="824" y="618" width="180" height="42" class="box"/>
+  <text x="914" y="644" text-anchor="middle" class="node">UsageTracker</text>
+
+  <rect x="626" y="672" width="180" height="42" class="box"/>
+  <text x="716" y="698" text-anchor="middle" class="node">AnthropicProvider</text>
+  <rect x="824" y="672" width="180" height="42" class="box"/>
+  <text x="914" y="698" text-anchor="middle" class="node">OpenAIProvider</text>
+
+  <!-- Data layer -->
+  <rect x="260" y="320" width="300" height="450" class="group"/>
+  <text x="280" y="346" class="groupTitle">Data Layer</text>
+  <rect x="286" y="364" width="248" height="44" class="box"/>
+  <text x="410" y="391" text-anchor="middle" class="node">Repositories</text>
+  <rect x="286" y="418" width="248" height="44" class="box"/>
+  <text x="410" y="445" text-anchor="middle" class="node">Cache Service</text>
+  <rect x="286" y="472" width="248" height="44" class="box"/>
+  <text x="410" y="499" text-anchor="middle" class="node">Redis</text>
+  <rect x="286" y="526" width="248" height="44" class="box"/>
+  <text x="410" y="553" text-anchor="middle" class="node">Postgres (messages/skills/usage)</text>
+
+  <rect x="286" y="590" width="248" height="44" class="box"/>
+  <text x="410" y="617" text-anchor="middle" class="node">Tool Registry Repository</text>
+  <rect x="286" y="644" width="248" height="44" class="box"/>
+  <text x="410" y="671" text-anchor="middle" class="node">HTTP Executor</text>
+  <rect x="286" y="698" width="248" height="44" class="box"/>
+  <text x="410" y="725" text-anchor="middle" class="node">Credential Vault</text>
+
+  <!-- External systems -->
+  <rect x="1070" y="380" width="440" height="390" class="group"/>
+  <text x="1090" y="406" class="groupTitle">External Systems</text>
+  <rect x="1096" y="424" width="388" height="44" class="box"/>
+  <text x="1290" y="451" text-anchor="middle" class="node">OpenAI / Anthropic APIs</text>
+  <rect x="1096" y="478" width="388" height="44" class="box"/>
+  <text x="1290" y="505" text-anchor="middle" class="node">Brave Search API</text>
+  <rect x="1096" y="532" width="388" height="44" class="box"/>
+  <text x="1290" y="559" text-anchor="middle" class="node">Public API Documentation Sites</text>
+  <rect x="1096" y="586" width="388" height="44" class="box"/>
+  <text x="1290" y="613" text-anchor="middle" class="node">Third-party Integration APIs</text>
+
+  <!-- Edges -->
+  <line x1="220" y1="112" x2="286" y2="192" class="arrow"/>
+  <text x="240" y="156" class="edge">chat request</text>
+
+  <line x1="534" y1="192" x2="626" y2="130" class="arrow"/>
+  <text x="552" y="162" class="edge">invoke process()</text>
+
+  <line x1="785" y1="154" x2="815" y2="564" class="arrow"/>
+  <text x="794" y="518" class="edge">llm.complete()</text>
+
+  <line x1="716" y1="660" x2="716" y2="672" class="arrow"/>
+  <line x1="914" y1="660" x2="914" y2="672" class="arrow"/>
+
+  <line x1="1004" y1="590" x2="1096" y2="446" class="arrow"/>
+  <text x="1030" y="525" class="edge">provider calls</text>
+
+  <line x1="410" y1="364" x2="626" y2="348" class="arrow"/>
+  <text x="498" y="336" class="edge">data loading</text>
+
+  <line x1="534" y1="618" x2="626" y2="291" class="arrow"/>
+  <text x="552" y="470" class="edge">tool execution path</text>
+
+  <line x1="534" y1="720" x2="286" y2="720" class="arrow"/>
+  <text x="462" y="708" class="edge">decrypt credentials</text>
+
+  <line x1="944" y1="343" x2="1268" y2="125" class="arrow"/>
+  <text x="1040" y="250" class="edge">learning intent</text>
+
+  <line x1="944" y1="380" x2="1036" y2="125" class="arrow"/>
+  <text x="962" y="275" class="edge">run learning flow</text>
+
+  <line x1="1258" y1="308" x2="1258" y2="424" class="dashed"/>
+  <text x="1270" y="364" class="edge">search/fetch/analyze</text>
+
+  <line x1="410" y1="445" x2="410" y2="526" class="arrow"/>
+  <line x1="410" y1="445" x2="410" y2="472" class="arrow"/>
+
+  <line x1="534" y1="192" x2="534" y2="550" class="dashed"/>
+  <text x="546" y="392" class="edge">persist user/assistant</text>
 </svg>

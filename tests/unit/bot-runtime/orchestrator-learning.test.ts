@@ -167,8 +167,9 @@ describe('MessageOrchestrator — learning flow integration', () => {
     expect(mockedExecute).not.toHaveBeenCalled();
     // Should NOT call the LLM for general conversation
     expect(llm.complete).not.toHaveBeenCalled();
-    // Should return a clarification response
-    expect(result.response.content).toContain('learn that');
+    // Should return a clarification response offering to search
+    expect(result.response.content).toContain('tell time');
+    expect(result.response.content).toContain('search');
   });
 
   it('does not trigger learning flow when no intent is detected', async () => {
@@ -371,10 +372,10 @@ describe('MessageOrchestrator — learning flow integration', () => {
     const result = await orchestrator.process(makeInput('learn Spotify'));
 
     expect(result.response.content).toContain('Spotify');
-    expect(result.response.content).toContain('research its API docs');
+    expect(result.response.content).toContain('search the web');
   });
 
-  it('clarification for capability-like name asks which service', async () => {
+  it('clarification for capability-like name offers to search proactively', async () => {
     mockedDetect.mockReturnValue({
       serviceName: 'Send Emails',
       confidence: 0.6,
@@ -384,7 +385,82 @@ describe('MessageOrchestrator — learning flow integration', () => {
     const orchestrator = new MessageOrchestrator(mockLLM(), mockDataLoader());
     const result = await orchestrator.process(makeInput('learn to send emails'));
 
-    expect(result.response.content).toContain('Which API or service');
     expect(result.response.content).toContain('send emails');
+    expect(result.response.content).toContain('search');
+    expect(result.response.suggestedActions).toContain('Yes, search for it');
+  });
+
+  it('clarification response contains hidden marker for follow-up detection', async () => {
+    mockedDetect.mockReturnValue({
+      serviceName: 'Tell Time',
+      confidence: 0.6,
+      originalPhrase: 'learn how to tell time',
+    });
+
+    const orchestrator = new MessageOrchestrator(mockLLM(), mockDataLoader());
+    const result = await orchestrator.process(makeInput('learn how to tell time'));
+
+    expect(result.response.content).toContain('<!-- learning-clarification:');
+    expect(result.response.content).toContain('Tell Time');
+  });
+
+  it('follow-up "yes" after clarification triggers learning flow', async () => {
+    // Simulate: last bot message was a clarification with marker
+    const data = mockDataLoader();
+    (data.loadConversationHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        messageId: 'msg-prev' as MessageId,
+        sessionId: 'sess-1' as SessionId,
+        botId: 'bot-1' as BotId,
+        role: 'assistant',
+        content: '<!-- learning-clarification:Tell Time -->I can do that! Want me to search?',
+        attachments: [],
+        skillId: null,
+        timestamp: new Date(),
+      },
+    ]);
+    mockedExecute.mockResolvedValue({
+      proposal: makeLearningProposal(),
+      progressLog: [],
+    });
+
+    const orchestrator = new MessageOrchestrator(mockLLM(), data);
+    const result = await orchestrator.process(makeInput('Yes'));
+
+    // Should trigger the learning flow with the capability as search query
+    expect(mockedExecute).toHaveBeenCalledOnce();
+    expect(mockedExecute).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        serviceName: 'Tell Time API',
+      }),
+    );
+    expect(result.sideEffects.find((e) => e.type === 'learning_proposal')).toBeDefined();
+  });
+
+  it('follow-up "no" after clarification falls through normally', async () => {
+    const data = mockDataLoader();
+    (data.loadConversationHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        messageId: 'msg-prev' as MessageId,
+        sessionId: 'sess-1' as SessionId,
+        botId: 'bot-1' as BotId,
+        role: 'assistant',
+        content: '<!-- learning-clarification:Tell Time -->I can do that! Want me to search?',
+        attachments: [],
+        skillId: null,
+        timestamp: new Date(),
+      },
+    ]);
+
+    const llm = mockLLM();
+    const orchestrator = new MessageOrchestrator(llm, data);
+    const result = await orchestrator.process(makeInput('No thanks'));
+
+    // Should NOT trigger learning flow
+    expect(mockedExecute).not.toHaveBeenCalled();
+    // Should fall through to general conversation
+    expect(llm.complete).toHaveBeenCalled();
+    expect(result.response.content).toBe('General response.');
   });
 });

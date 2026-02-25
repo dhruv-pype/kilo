@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { detectLearningIntent, looksLikeServiceName } from '../../../src/web-research/learning-detector.js';
+import {
+  detectLearningIntent,
+  looksLikeServiceName,
+  detectClarificationFollowUp,
+  buildClarificationMarker,
+  CLARIFICATION_MARKER,
+} from '../../../src/web-research/learning-detector.js';
 
 describe('detectLearningIntent', () => {
   // ── High confidence patterns ─────────────────────────────────
@@ -218,6 +224,73 @@ describe('detectLearningIntent', () => {
 
     it('returns true for "My Custom Tool" (3 words, no verb prefix)', () => {
       expect(looksLikeServiceName('My Custom Tool')).toBe(true);
+    });
+  });
+
+  // ── detectClarificationFollowUp ────────────────────────────────
+
+  describe('detectClarificationFollowUp', () => {
+    const markedMessage = `${buildClarificationMarker('Tell Time')}I can do that! I'll search for an API.`;
+
+    it('detects "yes" as affirmative follow-up', () => {
+      const result = detectClarificationFollowUp('Yes', markedMessage);
+      expect(result).not.toBeNull();
+      expect(result!.searchQuery).toBe('Tell Time API');
+    });
+
+    it('detects "sure" as affirmative', () => {
+      const result = detectClarificationFollowUp('Sure, go ahead', markedMessage);
+      expect(result).not.toBeNull();
+      expect(result!.searchQuery).toBe('Tell Time API');
+    });
+
+    it('detects "search for it" as affirmative', () => {
+      const result = detectClarificationFollowUp('search for it', markedMessage);
+      expect(result).not.toBeNull();
+      expect(result!.searchQuery).toBe('Tell Time API');
+    });
+
+    it('returns null for "no thanks"', () => {
+      const result = detectClarificationFollowUp('No thanks', markedMessage);
+      expect(result).toBeNull();
+    });
+
+    it('returns null for "never mind"', () => {
+      const result = detectClarificationFollowUp('Never mind', markedMessage);
+      expect(result).toBeNull();
+    });
+
+    it('returns null when last message has no marker', () => {
+      const result = detectClarificationFollowUp('Yes', 'Just a normal response');
+      expect(result).toBeNull();
+    });
+
+    it('returns null when last message is null', () => {
+      const result = detectClarificationFollowUp('Yes', null);
+      expect(result).toBeNull();
+    });
+
+    it('picks up service name when user mentions an API', () => {
+      const result = detectClarificationFollowUp('try the WorldTimeAPI service', markedMessage);
+      expect(result).not.toBeNull();
+      expect(result!.searchQuery).toBe('try the WorldTimeAPI service');
+    });
+
+    it('uses user reply as search query for short non-negative replies', () => {
+      const result = detectClarificationFollowUp('just find a free time API', markedMessage);
+      expect(result).not.toBeNull();
+      expect(result!.searchQuery).toBe('just find a free time API');
+    });
+  });
+
+  // ── buildClarificationMarker ───────────────────────────────────
+
+  describe('buildClarificationMarker', () => {
+    it('embeds capability in marker', () => {
+      const marker = buildClarificationMarker('Tell Time');
+      expect(marker).toContain(CLARIFICATION_MARKER);
+      expect(marker).toContain('Tell Time');
+      expect(marker).toContain('-->');
     });
   });
 });

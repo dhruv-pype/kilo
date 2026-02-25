@@ -241,9 +241,10 @@ describe('composeGeneralPrompt', () => {
     };
     const result = composeGeneralPrompt(input);
     expect(result.system).toContain('CAPABILITIES:');
-    expect(result.system).toContain('learn new API integrations');
+    expect(result.system).toContain('internet access via Brave Search');
     expect(result.system).toContain('propose and create new skills');
     expect(result.system).toContain('remember facts from previous conversations');
+    expect(result.system).toContain('Never say you lack internet access');
   });
 
   it('includes skill summary when provided', () => {

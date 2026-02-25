@@ -157,11 +157,15 @@ export function composeGeneralPrompt(input: GeneralCompositionInput): Prompt {
 
   // Capabilities — so the bot knows what it can do
   systemParts.push('\nCAPABILITIES:');
-  systemParts.push('- You can learn new API integrations. If a user wants you to interact with an external');
-  systemParts.push('  service, tell them to say "Learn how to use [ServiceName]" and you\'ll research the API');
-  systemParts.push('  docs and propose new tools and skills.');
+  systemParts.push('- You have internet access via Brave Search. You can search the web, read API documentation,');
+  systemParts.push('  and learn new integrations. When a user asks you to learn something, you research it online.');
+  systemParts.push('- To trigger learning, the user can say "Learn how to use [ServiceName]" and you\'ll');
+  systemParts.push('  automatically search the web, read the API docs, and propose new tools and skills.');
   systemParts.push('- You can propose and create new skills for recurring tasks.');
   systemParts.push('- You remember facts from previous conversations and use them as context.');
+  systemParts.push('- IMPORTANT: Never say you lack internet access or cannot browse the web. You CAN search');
+  systemParts.push('  and read web pages. If asked to learn something, guide the user to phrase it as');
+  systemParts.push('  "Learn how to use [ServiceName]" to trigger the learning flow.');
 
   // Current skills — so the bot knows what it already has
   if (input.skillSummary && input.skillSummary.length > 0) {
