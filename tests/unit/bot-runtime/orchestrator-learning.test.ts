@@ -58,6 +58,16 @@ function mockDataLoader(): DataLoaderPort {
     loadTableSchemas: vi.fn().mockResolvedValue([]),
     loadRecentDismissals: vi.fn().mockResolvedValue([]),
     loadTools: vi.fn().mockResolvedValue([]),
+    querySkillData: vi.fn().mockResolvedValue([]),
+    loadProposal: vi.fn().mockResolvedValue(null),
+    createSkill: vi.fn().mockResolvedValue(undefined),
+    acceptProposal: vi.fn().mockResolvedValue(undefined),
+    dismissProposal: vi.fn().mockResolvedValue(undefined),
+    updateSkill: vi.fn().mockResolvedValue(undefined),
+    saveRefinement: vi.fn().mockResolvedValue('refine-001'),
+    loadRefinement: vi.fn().mockResolvedValue(null),
+    applyRefinement: vi.fn().mockResolvedValue(undefined),
+    dismissRefinement: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -104,6 +114,18 @@ function makeLearningProposal() {
     sourceUrls: ['https://docs.canva.com/api'],
     confidence: 0.9,
   };
+}
+
+/**
+ * Helper: check if any main (non-extraction) LLM calls were made.
+ * Memory/soul extraction calls are background tasks and don't count.
+ */
+function getMainLLMCalls(llm: LLMGatewayPort): number {
+  const calls = (llm.complete as ReturnType<typeof vi.fn>).mock.calls;
+  return calls.filter((c) => {
+    const taskType = c[1]?.taskType;
+    return taskType !== 'memory_extraction' && taskType !== 'soul_extraction' && taskType !== 'intent_classification';
+  }).length;
 }
 
 // ─── Tests ───────────────────────────────────────────────────────
@@ -165,8 +187,9 @@ describe('MessageOrchestrator — learning flow integration', () => {
 
     // Should NOT call the full learning flow
     expect(mockedExecute).not.toHaveBeenCalled();
-    // Should NOT call the LLM for general conversation
-    expect(llm.complete).not.toHaveBeenCalled();
+    // Main LLM should NOT be called for general conversation
+    // (memory extraction may still call LLM as a side effect)
+    expect(getMainLLMCalls(llm)).toBe(0);
     // Should return a clarification response offering to search
     expect(result.response.content).toContain('tell time');
     expect(result.response.content).toContain('search');
@@ -339,8 +362,9 @@ describe('MessageOrchestrator — learning flow integration', () => {
     const result = await orchestrator.process(makeInput('test phrase'));
 
     expect(mockedExecute).not.toHaveBeenCalled();
-    // Clarification, not general conversation
-    expect(llm.complete).not.toHaveBeenCalled();
+    // Main LLM should not be called — this is a clarification
+    // (memory extraction may still call LLM as a side effect)
+    expect(getMainLLMCalls(llm)).toBe(0);
     expect(result.response.content).toContain('learn');
   });
 

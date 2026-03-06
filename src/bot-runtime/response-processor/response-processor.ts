@@ -1,6 +1,7 @@
 import type { SkillDefinition } from '../../common/types/skill.js';
 import type { LLMResponse, ProcessedResponse } from '../../common/types/orchestrator.js';
 import type { SkillId } from '../../common/types/ids.js';
+import { buildSkillExecMarker } from '../../web-research/learning-detector.js';
 
 /**
  * ResponseProcessor — Spec #2 interface implementation.
@@ -49,6 +50,11 @@ export function processResponse(
 
   // 5. Generate suggested actions
   const suggestedActions = generateSuggestedActions(content, skill);
+
+  // 6. Embed skill-exec marker so post-execution feedback detection knows which skill ran
+  if (skill?.skillId) {
+    content = buildSkillExecMarker(skill.skillId as string) + content;
+  }
 
   return {
     content,

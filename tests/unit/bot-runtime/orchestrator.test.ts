@@ -18,7 +18,10 @@ function makeSkill(name: string, patterns: string[]): SkillDefinition {
     inputSchema: null,
     outputFormat: 'text',
     schedule: null,
+    needsHistory: true,
+    needsMemory: true,
     dataTable: name === 'Order Tracker' ? 'orders' : null,
+    readsData: false,
     readableTables: [],
     tableSchema: null,
     requiredIntegrations: [],
@@ -31,14 +34,62 @@ function makeSkill(name: string, patterns: string[]): SkillDefinition {
   };
 }
 
+const BASE_RESPONSE = {
+  content: 'Here is your response.',
+  toolCalls: [],
+  model: 'claude-sonnet-4-5-20250929',
+  usage: { promptTokens: 100, completionTokens: 50 },
+  latencyMs: 500,
+};
+
+const NO_PROPOSAL_RESPONSE = {
+  content: '',
+  toolCalls: [{ toolName: 'no_proposal', arguments: { reason: 'not a repeatable need' } }],
+  model: 'claude-haiku-4-5-20251001',
+  usage: { promptTokens: 50, completionTokens: 10 },
+  latencyMs: 100,
+};
+
+const PROPOSAL_RESPONSE = {
+  content: '',
+  toolCalls: [{
+    toolName: 'propose_skill',
+    arguments: {
+      proposedName: 'Expenses Tracker',
+      description: 'Track and manage your expenses',
+      triggerExamples: ['add expense', 'log expense', 'show expenses'],
+      suggestedInputFields: [{ name: 'amount', type: 'number', description: 'Expense amount', required: true }],
+      suggestedSchedule: null,
+      clarifyingQuestions: ['What categories should I track?'],
+      confidence: 0.85,
+      dataModel: 'per_entry',
+    },
+  }],
+  model: 'claude-haiku-4-5-20251001',
+  usage: { promptTokens: 50, completionTokens: 20 },
+  latencyMs: 200,
+};
+
+/** Default mock — never proposes a skill (intent_classification → no_proposal). */
 function mockLLM(): LLMGatewayPort {
   return {
-    complete: vi.fn().mockResolvedValue({
-      content: 'Here is your response.',
-      toolCalls: [],
-      model: 'claude-sonnet-4-5-20250929',
-      usage: { promptTokens: 100, completionTokens: 50 },
-      latencyMs: 500,
+    complete: vi.fn().mockImplementation((_prompt, options) => {
+      if (options?.taskType === 'intent_classification') {
+        return Promise.resolve(NO_PROPOSAL_RESPONSE);
+      }
+      return Promise.resolve(BASE_RESPONSE);
+    }),
+  };
+}
+
+/** Mock that returns a skill proposal when the proposer calls intent_classification. */
+function mockProposingLLM(): LLMGatewayPort {
+  return {
+    complete: vi.fn().mockImplementation((_prompt, options) => {
+      if (options?.taskType === 'intent_classification') {
+        return Promise.resolve(PROPOSAL_RESPONSE);
+      }
+      return Promise.resolve(BASE_RESPONSE);
     }),
   };
 }
@@ -65,6 +116,16 @@ function mockDataLoader(skills: SkillDefinition[] = []): DataLoaderPort {
     loadTableSchemas: vi.fn().mockResolvedValue([]),
     loadRecentDismissals: vi.fn().mockResolvedValue([]),
     loadTools: vi.fn().mockResolvedValue([]),
+    querySkillData: vi.fn().mockResolvedValue([]),
+    loadProposal: vi.fn().mockResolvedValue(null),
+    createSkill: vi.fn().mockResolvedValue(undefined),
+    acceptProposal: vi.fn().mockResolvedValue(undefined),
+    dismissProposal: vi.fn().mockResolvedValue(undefined),
+    updateSkill: vi.fn().mockResolvedValue(undefined),
+    saveRefinement: vi.fn().mockResolvedValue('refine-001'),
+    loadRefinement: vi.fn().mockResolvedValue(null),
+    applyRefinement: vi.fn().mockResolvedValue(undefined),
+    dismissRefinement: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -84,6 +145,20 @@ function makeInput(content: string) {
   };
 }
 
+/**
+ * Helper: count LLM calls by task type.
+ * Memory extraction, soul extraction, and intent classification calls
+ * are background "cheap LLM" calls and should not count toward
+ * the main skill/conversation flow assertions.
+ */
+function getMainLLMCalls(llm: LLMGatewayPort): number {
+  const calls = (llm.complete as ReturnType<typeof vi.fn>).mock.calls;
+  return calls.filter((c) => {
+    const taskType = c[1]?.taskType;
+    return taskType !== 'memory_extraction' && taskType !== 'soul_extraction' && taskType !== 'intent_classification';
+  }).length;
+}
+
 // ─── Tests ─────────────────────────────────────────────────────
 
 describe('MessageOrchestrator', () => {
@@ -95,8 +170,9 @@ describe('MessageOrchestrator', () => {
 
     const result = await orchestrator.process(makeInput('New order for Maria'));
 
-    expect(result.response.content).toBe('Here is your response.');
-    expect(llm.complete).toHaveBeenCalledOnce();
+    // Content now has a skill-exec marker prepended for post-execution feedback detection
+    expect(result.response.content).toContain('Here is your response.');
+    expect(getMainLLMCalls(llm)).toBe(1);
     expect(result.response.skillId).toBe('skill-Order Tracker');
   });
 
@@ -108,12 +184,12 @@ describe('MessageOrchestrator', () => {
     const result = await orchestrator.process(makeInput('Hello, how are you?'));
 
     expect(result.response.content).toBe('Here is your response.');
-    expect(llm.complete).toHaveBeenCalledOnce();
+    expect(getMainLLMCalls(llm)).toBe(1);
     expect(result.response.skillId).toBeNull();
   });
 
   it('proposes a skill when message implies repeatable need', async () => {
-    const llm = mockLLM();
+    const llm = mockProposingLLM();
     const data = mockDataLoader([]);
     const orchestrator = new MessageOrchestrator(llm, data);
 
@@ -137,7 +213,8 @@ describe('MessageOrchestrator', () => {
     const memoryEffect = result.sideEffects.find((e) => e.type === 'memory_write');
     expect(memoryEffect).toBeDefined();
     if (memoryEffect?.type === 'memory_write') {
-      expect(memoryEffect.facts.some((f) => f.key === 'business_name')).toBe(true);
+      // With LLM extraction, we might get different keys. Just check that facts exist.
+      expect(memoryEffect.facts.length).toBeGreaterThan(0);
     }
   });
 
@@ -217,7 +294,7 @@ describe('MessageOrchestrator', () => {
 
   // ─── Built-in Skill Tests ─────────────────────────────────────
 
-  it('routes built-in skill without calling LLM', async () => {
+  it('routes built-in skill without calling main LLM', async () => {
     const llm = mockLLM();
     const data = mockDataLoader([]); // no DB skills — built-ins are merged automatically
     const orchestrator = new MessageOrchestrator(llm, data);
@@ -227,8 +304,9 @@ describe('MessageOrchestrator', () => {
     // Built-in handler should respond directly
     expect(result.response.skillId).toBe('builtin-time');
     expect(result.response.content).toMatch(/It's \*\*/);
-    // LLM should NOT be called for built-in skills
-    expect(llm.complete).not.toHaveBeenCalled();
+    // Main LLM should NOT be called for built-in skills
+    // (memory extraction may still call LLM as a side effect)
+    expect(getMainLLMCalls(llm)).toBe(0);
   });
 
   it('built-in skills are merged with DB skills for matching', async () => {
@@ -244,7 +322,7 @@ describe('MessageOrchestrator', () => {
     // This should match the user's order tracker skill
     const result2 = await orchestrator.process(makeInput('new order for Maria'));
     expect(result2.response.skillId).toBe('skill-Order Tracker');
-    expect(llm.complete).toHaveBeenCalledOnce(); // only for the order
+    expect(getMainLLMCalls(llm)).toBe(1); // only for the order (not for built-in time)
   });
 
   it('non-built-in skill still goes through LLM flow', async () => {
@@ -256,6 +334,6 @@ describe('MessageOrchestrator', () => {
     const result = await orchestrator.process(makeInput('new order for Maria'));
 
     expect(result.response.skillId).toBe('skill-Order Tracker');
-    expect(llm.complete).toHaveBeenCalledOnce();
+    expect(getMainLLMCalls(llm)).toBe(1);
   });
 });

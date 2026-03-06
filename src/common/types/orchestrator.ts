@@ -79,7 +79,10 @@ export type TaskType =
   | 'skill_generation'
   | 'complex_reasoning'
   | 'data_analysis'
-  | 'doc_extraction';
+  | 'doc_extraction'
+  | 'memory_extraction'
+  | 'soul_extraction'
+  | 'intent_classification';
 
 export interface ModelPreferences {
   taskType: TaskType;
@@ -97,6 +100,28 @@ export interface LLMResponse {
   thinkingSummary?: string;
 }
 
+// ─── Skill Generator ───────────────────────────────────────────
+
+export interface SkillGenerationResult {
+  behaviorPrompt: string;
+  triggerPatterns: string[];
+  description: string;
+  needsHistory: boolean;
+  needsMemory: boolean;
+  readsData: boolean;
+}
+
+export interface SkillRefinementResult extends SkillGenerationResult {
+  changesSummary: string;
+}
+
+export interface StoredRefinement {
+  refinementId: string;
+  skillId: string;
+  botId: string;
+  result: SkillRefinementResult;
+}
+
 // ─── SkillProposer ─────────────────────────────────────────────
 
 export interface SkillProposal {
@@ -107,6 +132,7 @@ export interface SkillProposal {
   suggestedSchedule: string | null;
   clarifyingQuestions: string[];
   confidence: number;
+  dataModel: 'per_entry' | 'daily_total' | 'singleton';
 }
 
 export interface FieldSuggestion {
@@ -114,6 +140,12 @@ export interface FieldSuggestion {
   type: string;
   description: string;
   required: boolean;
+}
+
+export interface StoredProposal {
+  proposalId: string;
+  botId: string;
+  proposal: SkillProposal;
 }
 
 // ─── Response Processing ───────────────────────────────────────
@@ -131,18 +163,26 @@ export interface ProcessedResponse {
 
 export type SideEffect =
   | { type: 'memory_write'; facts: MemoryFact[] }
-  | { type: 'skill_proposal'; proposal: SkillProposal }
+  | { type: 'skill_proposal'; proposalId: string; proposal: SkillProposal }
   | { type: 'skill_data_write'; table: string; operation: 'insert' | 'update' | 'delete'; data: Record<string, unknown> }
   | { type: 'schedule_notification'; message: string; at: Date; recurring: string | null }
   | { type: 'analytics_event'; event: string; properties: Record<string, unknown> }
   | { type: 'api_call'; toolName: string; endpoint: string; status: number; latencyMs: number }
-  | { type: 'learning_proposal'; proposal: LearningProposalRef };
+  | { type: 'learning_proposal'; proposal: LearningProposalRef }
+  | { type: 'soul_update'; patches: SoulPatch[]; botId: string }
+  | { type: 'skill_refinement'; refinementId: string; skillId: string; botId: string; result: SkillRefinementResult };
 
 export interface LearningProposalRef {
   serviceName: string;
   endpointCount: number;
   skillCount: number;
   sourceUrls: string[];
+}
+
+export interface SoulPatch {
+  path: string;
+  operation: 'set' | 'add' | 'remove';
+  value: string;
 }
 
 // ─── Supporting Types ──────────────────────────────────────────

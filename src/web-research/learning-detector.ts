@@ -9,6 +9,7 @@
  */
 
 import type { LearningIntent } from './types.js';
+import type { SkillDefinition } from '../common/types/skill.js';
 
 /**
  * Patterns indicating a learning/integration request.
@@ -189,6 +190,235 @@ export function detectClarificationFollowUp(
   }
 
   return null;
+}
+
+// ─── Proposal Marker ──────────────────────────────────────────────────────────
+// Skill proposal responses contain this marker so follow-up detection works.
+export const PROPOSAL_MARKER = '<!-- skill-proposal:';
+
+/**
+ * Build a marker string to embed in skill proposal responses.
+ * Contains the proposalId so follow-up detection can look up the DB record.
+ */
+export function buildProposalMarker(proposalId: string): string {
+  return `${PROPOSAL_MARKER}${proposalId} -->`;
+}
+
+/**
+ * Detect if the user is responding to a previous skill proposal.
+ *
+ * Checks:
+ * 1. The last assistant message contains a proposal marker
+ * 2. The user's message is affirmative ("yes", "create", "ok") or negative ("no", "nah")
+ *
+ * Returns { proposalId, accepted } or null if this isn't a follow-up.
+ */
+export function detectProposalFollowUp(
+  userMessage: string,
+  lastAssistantMessage: string | null,
+): { proposalId: string; accepted: boolean } | null {
+  if (!lastAssistantMessage) return null;
+
+  const markerIdx = lastAssistantMessage.indexOf(PROPOSAL_MARKER);
+  if (markerIdx === -1) return null;
+
+  const start = markerIdx + PROPOSAL_MARKER.length;
+  const end = lastAssistantMessage.indexOf(' -->', start);
+  if (end === -1) return null;
+  const proposalId = lastAssistantMessage.slice(start, end).trim();
+  if (!proposalId) return null;
+
+  const trimmed = userMessage.trim();
+
+  // Negative patterns — user declining
+  const negative = /^(no|nope|nah|never\s*mind|no\s*thanks)\b/i;
+  if (negative.test(trimmed)) return { proposalId, accepted: false };
+
+  // Affirmative patterns — user confirming
+  const affirmative = /^(yes|yeah|sure|ok|okay|create|go\s*ahead|do\s*it)\b/i;
+  if (affirmative.test(trimmed)) return { proposalId, accepted: true };
+
+  // Don't intercept unrelated replies
+  return null;
+}
+
+// ─── Skill Exec Marker ────────────────────────────────────────────────────────
+// Injected into responses when a user skill runs, so post-execution feedback
+// detection can identify which skill produced the response.
+
+export const SKILL_EXEC_MARKER = '<!-- skill-exec:';
+
+export function buildSkillExecMarker(skillId: string): string {
+  return `${SKILL_EXEC_MARKER}${skillId} -->`;
+}
+
+// ─── Refinement Marker ────────────────────────────────────────────────────────
+// Refinement preview responses contain this marker so follow-up detection works.
+
+export const REFINEMENT_MARKER = '<!-- skill-refine:';
+
+export function buildRefinementMarker(refinementId: string): string {
+  return `${REFINEMENT_MARKER}${refinementId} -->`;
+}
+
+/**
+ * Detect if the user is responding to a previous skill refinement preview.
+ *
+ * Checks:
+ * 1. The last assistant message contains a refinement marker
+ * 2. The user's message is affirmative ("yes", "apply it") or negative ("no", "no thanks")
+ */
+export function detectRefinementFollowUp(
+  userMessage: string,
+  lastAssistantMessage: string | null,
+): { refinementId: string; accepted: boolean } | null {
+  if (!lastAssistantMessage) return null;
+
+  const markerIdx = lastAssistantMessage.indexOf(REFINEMENT_MARKER);
+  if (markerIdx === -1) return null;
+
+  const start = markerIdx + REFINEMENT_MARKER.length;
+  const end = lastAssistantMessage.indexOf(' -->', start);
+  if (end === -1) return null;
+  const refinementId = lastAssistantMessage.slice(start, end).trim();
+  if (!refinementId) return null;
+
+  const trimmed = userMessage.trim();
+
+  const negative = /^(no|nope|nah|never\s*mind|no\s*thanks|don'?t|skip)\b/i;
+  if (negative.test(trimmed)) return { refinementId, accepted: false };
+
+  const affirmative = /^(yes|yeah|sure|ok|okay|apply|go\s*ahead|do\s*it|looks?\s*good|update\s*it)\b/i;
+  if (affirmative.test(trimmed)) return { refinementId, accepted: true };
+
+  return null;
+}
+
+/**
+ * Detect if the user is giving negative feedback about the last skill execution.
+ *
+ * Returns non-null only when:
+ * 1. The last assistant message contains a skill-exec marker (a skill just ran)
+ * 2. The user's message is clearly negative feedback ("that's wrong", "incorrect", etc.)
+ */
+export function detectPostExecutionFeedback(
+  userMessage: string,
+  lastAssistantMessage: string | null,
+): { skillId: string } | null {
+  if (!lastAssistantMessage) return null;
+
+  const markerIdx = lastAssistantMessage.indexOf(SKILL_EXEC_MARKER);
+  if (markerIdx === -1) return null;
+
+  const start = markerIdx + SKILL_EXEC_MARKER.length;
+  const end = lastAssistantMessage.indexOf(' -->', start);
+  if (end === -1) return null;
+  const skillId = lastAssistantMessage.slice(start, end).trim();
+  if (!skillId) return null;
+
+  const NEGATIVE_PATTERNS = [
+    /\bthat'?s?\s*(wrong|incorrect|not right|not what\s*i\s*meant|off)\b/i,
+    /\bnot\s*(right|correct|what\s*i\s*(wanted|meant|asked))\b/i,
+    /\b(wrong|mistake|incorrect|broken|doesn'?t\s*work|not\s*working)\b/i,
+    /\bfix\s*this\b/i,
+    /^(no|wrong|nope|incorrect)\b/i,
+    /\bthat'?s\s*not\s*(it|right|correct)\b/i,
+  ];
+
+  const trimmed = userMessage.trim();
+  if (NEGATIVE_PATTERNS.some((p) => p.test(trimmed))) {
+    return { skillId };
+  }
+
+  return null;
+}
+
+/**
+ * Detect explicit skill refinement requests like:
+ * - "fix my steps skill"
+ * - "update the expense tracker to handle retroactive entries"
+ * - "improve my steps skill"
+ * - "the expense skill doesn't handle weekly totals"
+ * - "my steps tracker should support weekly summaries"
+ *
+ * Uses fuzzy name matching against the skills list.
+ * Returns the matching skill and the feedback text, or null.
+ */
+export function detectSkillRefinementIntent(
+  userMessage: string,
+  skills: SkillDefinition[],
+): { skill: SkillDefinition; feedback: string } | null {
+  if (skills.length === 0) return null;
+
+  // Pattern 1: "fix/improve/update/refine [my] X [skill]"
+  const EXPLICIT_PATTERNS = [
+    /\b(fix|improve|update|refine|change|adjust|modify)\s+(?:my\s+)?(.+?)(?:\s+skill(?:s)?)?\s*(?:to\s+|so\s+that\s+|:.*)?$/i,
+    /\b(?:my\s+)?(.+?)\s+skill\s+(isn'?t|doesn'?t|can'?t|won'?t|fails?|doesn'?t\s+handle)\b/i,
+    /\bthe\s+(.+?)\s+(?:skill\s+)?should\b/i,
+  ];
+
+  for (const pattern of EXPLICIT_PATTERNS) {
+    const match = userMessage.match(pattern);
+    if (!match) continue;
+
+    // The skill name is in one of the capture groups
+    const nameCandidates = match.slice(1).filter(Boolean);
+    for (const candidate of nameCandidates) {
+      // Skip common non-skill words
+      if (/^(it|this|that|the|my|fix|improve|update|refine|change|adjust|isn|doesn|can|won|fail)$/i.test(candidate.trim())) {
+        continue;
+      }
+      const matched = findSkillByName(candidate, skills);
+      if (matched) {
+        return { skill: matched, feedback: userMessage };
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Fuzzy skill name matching — checks if any skill name words appear in the candidate string.
+ * Returns the skill with the highest overlap, or null if no match above threshold.
+ */
+function findSkillByName(candidate: string, skills: SkillDefinition[]): SkillDefinition | null {
+  const candidateTokens = tokenizeNameWords(candidate);
+  if (candidateTokens.size === 0) return null;
+
+  let bestSkill: SkillDefinition | null = null;
+  let bestScore = 0;
+
+  for (const skill of skills) {
+    if (!skill.isActive) continue;
+    const skillTokens = tokenizeNameWords(skill.name);
+    if (skillTokens.size === 0) continue;
+
+    let hits = 0;
+    for (const token of skillTokens) {
+      if (candidateTokens.has(token)) hits++;
+    }
+
+    // Score = fraction of skill name tokens found in candidate
+    const score = hits / skillTokens.size;
+    if (score > 0.5 && score > bestScore) {
+      bestScore = score;
+      bestSkill = skill;
+    }
+  }
+
+  return bestSkill;
+}
+
+function tokenizeNameWords(text: string): Set<string> {
+  const SKILL_STOP_WORDS = new Set(['skill', 'tracker', 'log', 'manager', 'my', 'the', 'a', 'an']);
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((t) => t.length > 2 && !SKILL_STOP_WORDS.has(t)),
+  );
 }
 
 function extractLikelyServiceFromCapability(capability: string): string | null {

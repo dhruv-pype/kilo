@@ -10,28 +10,41 @@ import type {
   Prompt,
   SkillMatch,
   SkillProposal,
+  StoredProposal,
+  StoredRefinement,
+  SkillRefinementResult,
+  SkillGenerationResult,
   TableSchema,
   RAGChunk,
+  FieldSuggestion,
 } from '../../common/types/orchestrator.js';
 import type { Message } from '../../common/types/message.js';
 import type { BotConfig } from '../../common/types/bot.js';
-import type { SkillDefinition } from '../../common/types/skill.js';
+import type { SkillDefinition, SkillCreateInput } from '../../common/types/skill.js';
 import type { ToolRegistryEntry, HttpToolResponse } from '../../common/types/tool-registry.js';
 import type { BotId } from '../../common/types/ids.js';
+import { v4 as uuidv4 } from 'uuid';
 import type { LearningProposal } from '../../web-research/types.js';
 import { matchSkill } from '../skill-matcher/skill-matcher.js';
 import { composeSkillPrompt, composeGeneralPrompt } from '../prompt-composer/prompt-composer.js';
 import { decryptCredential } from '../../tool-execution/credential-vault.js';
 import { executeHttpTool } from '../../tool-execution/http-executor.js';
 import { processResponse } from '../response-processor/response-processor.js';
-import { extractMemoryFacts } from '../memory-extractor/memory-extractor.js';
+import { extractMemoryFacts, regexExtractMemoryFacts } from '../memory-extractor/memory-extractor.js';
 import { evaluateForProposal } from '../skill-proposer/skill-proposer.js';
 import {
   detectLearningIntent,
   looksLikeServiceName,
   detectClarificationFollowUp,
   buildClarificationMarker,
+  detectProposalFollowUp,
+  buildProposalMarker,
+  detectRefinementFollowUp,
+  detectPostExecutionFeedback,
+  detectSkillRefinementIntent,
+  buildRefinementMarker,
 } from '../../web-research/learning-detector.js';
+import { generate as skillGenerate, refine as skillRefine } from '../../skill-engine/skill-generator.js';
 import { executeLearningFlow } from '../../web-research/learning-flow.js';
 import { WebResearchError } from '../../common/errors/index.js';
 import {
@@ -62,6 +75,23 @@ export interface DataLoaderPort {
   loadTableSchemas(botId: string, tableNames: string[]): Promise<TableSchema[]>;
   loadRecentDismissals(botId: string): Promise<{ proposedName: string; dismissedAt: Date }[]>;
   loadTools(botId: string, names: string[]): Promise<ToolRegistryEntry[]>;
+  querySkillData(schemaName: string, sql: string): Promise<Record<string, unknown>[]>;
+  loadProposal(proposalId: string): Promise<StoredProposal | null>;
+  createSkill(botId: string, input: SkillCreateInput): Promise<void>;
+  acceptProposal(proposalId: string): Promise<void>;
+  dismissProposal(proposalId: string): Promise<void>;
+  updateSkill(skillId: string, updates: Partial<{
+    behaviorPrompt: string;
+    triggerPatterns: string[];
+    description: string;
+    needsHistory: boolean;
+    needsMemory: boolean;
+    readsData: boolean;
+  }>): Promise<void>;
+  saveRefinement(skillId: string, botId: string, result: SkillRefinementResult): Promise<string>;
+  loadRefinement(refinementId: string): Promise<StoredRefinement | null>;
+  applyRefinement(refinementId: string): Promise<void>;
+  dismissRefinement(refinementId: string): Promise<void>;
 }
 
 /**
@@ -110,15 +140,39 @@ export class MessageOrchestrator {
         sideEffects,
       );
 
-      const memoryFacts = extractMemoryFacts(message.content);
-      if (memoryFacts.length > 0) {
-        sideEffects.push({ type: 'memory_write', facts: memoryFacts });
-      }
+      // Memory extraction (async, non-blocking)
+      await this.extractAndPushMemory(message.content, learningResult.content, botId as string, sideEffects);
 
       return { response: learningResult, sideEffects };
     }
 
-    // 2b. Check for learning intent (fast regex — <1ms, runs before skill matching)
+    // 2b-proposal. Check if user is responding to a previous skill proposal
+    const proposalFollowUp = detectProposalFollowUp(message.content, lastBotMsg?.content ?? null);
+    if (proposalFollowUp) {
+      let response: ProcessedResponse;
+      if (proposalFollowUp.accepted) {
+        response = await this.handleSkillCreation(proposalFollowUp.proposalId, botId as string, sideEffects);
+      } else {
+        response = await this.handleProposalDismissal(proposalFollowUp.proposalId);
+      }
+      await this.extractAndPushMemory(message.content, response.content, botId as string, sideEffects);
+      return { response, sideEffects };
+    }
+
+    // 2b-refine-followup. Check if user is responding to a skill refinement preview
+    const refinementFollowUp = detectRefinementFollowUp(message.content, lastBotMsg?.content ?? null);
+    if (refinementFollowUp) {
+      let response: ProcessedResponse;
+      if (refinementFollowUp.accepted) {
+        response = await this.handleApplyRefinement(refinementFollowUp.refinementId);
+      } else {
+        response = await this.handleRefinementDismissal(refinementFollowUp.refinementId);
+      }
+      await this.extractAndPushMemory(message.content, response.content, botId as string, sideEffects);
+      return { response, sideEffects };
+    }
+
+    // 2c. Check for learning intent (fast regex — <1ms, runs before skill matching)
     const learningIntent = detectLearningIntent(message.content);
     if (learningIntent && learningIntent.confidence >= 0.7) {
       // High confidence → full learning flow
@@ -130,26 +184,53 @@ export class MessageOrchestrator {
       );
 
       // Memory extraction still runs for learning messages
-      const memoryFacts = extractMemoryFacts(message.content);
-      if (memoryFacts.length > 0) {
-        sideEffects.push({ type: 'memory_write', facts: memoryFacts });
-      }
+      await this.extractAndPushMemory(message.content, learningResult.content, botId as string, sideEffects);
 
       return { response: learningResult, sideEffects };
     } else if (learningIntent && learningIntent.confidence >= 0.5) {
       // Medium confidence → clarification (ask the user to confirm intent)
       const clarification = buildLearningClarification(learningIntent.serviceName);
 
-      const memoryFacts = extractMemoryFacts(message.content);
-      if (memoryFacts.length > 0) {
-        sideEffects.push({ type: 'memory_write', facts: memoryFacts });
-      }
+      await this.extractAndPushMemory(message.content, clarification.content, botId as string, sideEffects);
 
       return { response: clarification, sideEffects };
     }
 
-    // 3. Match skill
-    const skillMatch = await matchSkill(message, skills);
+    // 2d. Check for explicit skill refinement requests ("fix my steps skill")
+    const refinementIntent = detectSkillRefinementIntent(message.content, dbSkills);
+    if (refinementIntent) {
+      const recentMessages = await this.data.loadConversationHistory(botId as string, sessionId as string, 5);
+      const response = await this.handleSkillRefinement(
+        refinementIntent.skill,
+        refinementIntent.feedback,
+        recentMessages,
+        botId as string,
+        sideEffects,
+      );
+      await this.extractAndPushMemory(message.content, response.content, botId as string, sideEffects);
+      return { response, sideEffects };
+    }
+
+    // 2e. Check for post-execution negative feedback ("that's wrong")
+    const postExecFeedback = detectPostExecutionFeedback(message.content, lastBotMsg?.content ?? null);
+    if (postExecFeedback) {
+      const skillForFeedback = dbSkills.find((s) => s.skillId === postExecFeedback.skillId);
+      if (skillForFeedback) {
+        const recentMessages = await this.data.loadConversationHistory(botId as string, sessionId as string, 5);
+        const response = await this.handleSkillRefinement(
+          skillForFeedback,
+          message.content,
+          recentMessages,
+          botId as string,
+          sideEffects,
+        );
+        await this.extractAndPushMemory(message.content, response.content, botId as string, sideEffects);
+        return { response, sideEffects };
+      }
+    }
+
+    // 3. Match skill (LLM-powered slow path when fast match is uncertain)
+    const skillMatch = await matchSkill(message, skills, this.llm);
 
     let response: ProcessedResponse;
 
@@ -179,13 +260,63 @@ export class MessageOrchestrator {
       );
     }
 
-    // 4. Extract memory facts (side effect — processed async)
-    const memoryFacts = extractMemoryFacts(message.content);
-    if (memoryFacts.length > 0) {
-      sideEffects.push({ type: 'memory_write', facts: memoryFacts });
+    // 4. Extract memory facts + soul updates (side effects — processed async)
+    // Skip extraction if neither the message nor the response contains
+    // any signals that personal facts might be present. Saves an LLM call
+    // on pure command messages ("log a sale", "what time is it", etc).
+    if (mightContainPersonalFacts(message.content, response.content)) {
+      await this.extractAndPushMemory(message.content, response.content, botId as string, sideEffects);
     }
+    await this.extractAndPushSoulUpdates(message.content, response.content, botId as string, botConfig, sideEffects);
 
     return { response, sideEffects };
+  }
+
+  /**
+   * LLM-powered memory extraction helper.
+   * Loads existing facts so the LLM can avoid duplicates, then pushes new facts as a side effect.
+   * Never blocks the response — catches and logs all errors.
+   */
+  private async extractAndPushMemory(
+    userContent: string,
+    assistantContent: string,
+    botId: string,
+    sideEffects: SideEffect[],
+  ): Promise<void> {
+    try {
+      const existingFacts = await this.data.loadMemoryFacts(botId, null);
+      const newFacts = await extractMemoryFacts(userContent, assistantContent, existingFacts, this.llm);
+      if (newFacts.length > 0) {
+        sideEffects.push({ type: 'memory_write', facts: newFacts });
+      }
+    } catch (err) {
+      console.warn('[orchestrator] Memory extraction failed:', (err as Error).message);
+    }
+  }
+
+  /**
+   * LLM-powered soul evolution helper.
+   * Detects explicit personality instructions and pushes patches as a side effect.
+   * Only runs when the bot has a soul defined. Never blocks the response.
+   */
+  private async extractAndPushSoulUpdates(
+    userContent: string,
+    assistantContent: string,
+    botId: string,
+    botConfig: BotConfig,
+    sideEffects: SideEffect[],
+  ): Promise<void> {
+    if (!botConfig.soul) return;
+    try {
+      // Dynamic import to avoid circular dependency issues at module load time
+      const { extractSoulUpdates } = await import('../soul-evolver/soul-evolver.js');
+      const patches = await extractSoulUpdates(userContent, assistantContent, botConfig.soul, this.llm);
+      if (patches.length > 0) {
+        sideEffects.push({ type: 'soul_update', patches, botId });
+      }
+    } catch (err) {
+      console.warn('[orchestrator] Soul extraction failed:', (err as Error).message);
+    }
   }
 
   private async handleSkillMatch(
@@ -233,7 +364,29 @@ export class MessageOrchestrator {
 
     // Process tool calls from LLM response as side effects
     for (const toolCall of llmResponse.toolCalls) {
-      if (toolCall.toolName === 'call_api') {
+      if (toolCall.toolName === 'query_skill_data') {
+        // Execute the SELECT query and feed results back for a final answer
+        try {
+          const rows = await this.data.querySkillData(
+            botConfig.schemaName,
+            toolCall.arguments.sql as string,
+          );
+          const followUpPrompt: Prompt = {
+            ...prompt,
+            messages: [
+              ...prompt.messages,
+              { role: 'assistant', content: `[Query Result]: ${JSON.stringify(rows)}` },
+              { role: 'user', content: 'Based on the query results above, provide the final answer to the user.' },
+            ],
+          };
+          llmResponse = await this.llm.complete(followUpPrompt, {
+            taskType: modelPreferences.taskType,
+            streaming: modelPreferences.streaming,
+          });
+        } catch (err) {
+          console.warn('[orchestrator] query_skill_data failed:', (err as Error).message);
+        }
+      } else if (toolCall.toolName === 'call_api') {
         // Handle external API call
         const apiResult = await this.handleApiCall(toolCall.arguments, apiTools, sideEffects);
 
@@ -366,11 +519,13 @@ export class MessageOrchestrator {
   ): Promise<ProcessedResponse> {
     // Check if we should propose a new skill
     const dismissals = await this.data.loadRecentDismissals(botId);
-    const proposal = evaluateForProposal(message, skills, { recentDismissals: dismissals });
+    const proposal = await evaluateForProposal(message, skills, { recentDismissals: dismissals }, this.llm);
 
     if (proposal) {
-      sideEffects.push({ type: 'skill_proposal', proposal });
-      return formatSkillProposal(proposal);
+      const proposalId = uuidv4();
+      sideEffects.push({ type: 'skill_proposal', proposalId, proposal });
+      const formatted = formatSkillProposal(proposal);
+      return { ...formatted, content: buildProposalMarker(proposalId) + '\n' + formatted.content };
     }
 
     // General conversation — no skill, no proposal
@@ -509,6 +664,338 @@ export class MessageOrchestrator {
       tableSchemas: (resultMap.tableSchemas as TableSchema[]) ?? [],
     };
   }
+
+  /**
+   * Handle "Yes, create it" — load the stored proposal, create the skill, mark accepted.
+   */
+  private async handleSkillCreation(
+    proposalId: string,
+    botId: string,
+    _sideEffects: SideEffect[],
+  ): Promise<ProcessedResponse> {
+    const stored = await this.data.loadProposal(proposalId);
+    if (!stored) {
+      return {
+        content: "I'm sorry, I couldn't find that proposal. It may have expired.",
+        format: 'text',
+        structuredData: null,
+        skillId: null,
+        suggestedActions: [],
+      };
+    }
+
+    let input = proposalToSkillInput(botId, stored.proposal);
+
+    // Generate domain-specific behavior prompt via LLM
+    try {
+      const tableSchema = proposalToDDL(stored.proposal);
+      const generated = await skillGenerate(stored.proposal, tableSchema, this.llm);
+      input = mergeGenerated(input, generated);
+    } catch (err) {
+      console.warn('[orchestrator] SkillGenerator.generate failed, using template fallback:', (err as Error).message);
+    }
+
+    try {
+      await this.data.createSkill(botId, input);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'unknown error';
+      return {
+        content: `I wasn't able to create that skill: ${detail}`,
+        format: 'text',
+        structuredData: null,
+        skillId: null,
+        suggestedActions: [],
+      };
+    }
+    await this.data.acceptProposal(proposalId);
+
+    const examples = stored.proposal.triggerExamples.slice(0, 3);
+    const exampleList = examples.map((e) => `'${e}'`).join(', ');
+
+    return {
+      content: `Done! I've created the **${stored.proposal.proposedName}** skill. Try saying: ${exampleList}.`,
+      format: 'text',
+      structuredData: null,
+      skillId: null,
+      suggestedActions: examples,
+    };
+  }
+
+  /**
+   * Handle a skill refinement request — generate an improved spec and show a preview.
+   */
+  private async handleSkillRefinement(
+    skill: SkillDefinition,
+    feedback: string,
+    recentMessages: import('../../common/types/message.js').Message[],
+    botId: string,
+    sideEffects: SideEffect[],
+  ): Promise<ProcessedResponse> {
+    const context = recentMessages
+      .map((m) => `${m.role}: ${m.content}`)
+      .join('\n');
+
+    let result: SkillRefinementResult;
+    try {
+      result = await skillRefine(skill, feedback, context, this.llm);
+    } catch (err) {
+      return {
+        content: `I wasn't able to generate a refinement: ${(err as Error).message}`,
+        format: 'text',
+        structuredData: null,
+        skillId: null,
+        suggestedActions: [],
+      };
+    }
+
+    const refinementId = uuidv4();
+    sideEffects.push({
+      type: 'skill_refinement',
+      refinementId,
+      skillId: skill.skillId as string,
+      botId,
+      result,
+    });
+
+    const preview = formatRefinementPreview(skill.name, result);
+    return {
+      content: buildRefinementMarker(refinementId) + '\n' + preview,
+      format: 'text',
+      structuredData: null,
+      skillId: null,
+      suggestedActions: ['Yes, apply it', 'No thanks'],
+    };
+  }
+
+  /**
+   * Handle "Yes, apply it" — apply the stored refinement to the skill.
+   */
+  private async handleApplyRefinement(refinementId: string): Promise<ProcessedResponse> {
+    const stored = await this.data.loadRefinement(refinementId);
+    if (!stored) {
+      return {
+        content: "I'm sorry, I couldn't find that refinement. It may have expired.",
+        format: 'text',
+        structuredData: null,
+        skillId: null,
+        suggestedActions: [],
+      };
+    }
+
+    try {
+      await this.data.updateSkill(stored.skillId, {
+        behaviorPrompt: stored.result.behaviorPrompt,
+        triggerPatterns: stored.result.triggerPatterns,
+        description: stored.result.description,
+        needsHistory: stored.result.needsHistory,
+        needsMemory: stored.result.needsMemory,
+        readsData: stored.result.readsData,
+      });
+      await this.data.applyRefinement(refinementId);
+    } catch (err) {
+      return {
+        content: `I wasn't able to apply that refinement: ${(err as Error).message}`,
+        format: 'text',
+        structuredData: null,
+        skillId: null,
+        suggestedActions: [],
+      };
+    }
+
+    return {
+      content: `Done — the skill has been updated.`,
+      format: 'text',
+      structuredData: null,
+      skillId: null,
+      suggestedActions: [],
+    };
+  }
+
+  /**
+   * Handle "No thanks" on a refinement preview — dismiss it.
+   */
+  private async handleRefinementDismissal(refinementId: string): Promise<ProcessedResponse> {
+    await this.data.dismissRefinement(refinementId);
+    return {
+      content: "No problem, I'll leave it as is.",
+      format: 'text',
+      structuredData: null,
+      skillId: null,
+      suggestedActions: [],
+    };
+  }
+
+  /**
+   * Handle "No thanks" — mark the proposal dismissed (enforces 7-day cooldown).
+   */
+  private async handleProposalDismissal(proposalId: string): Promise<ProcessedResponse> {
+    await this.data.dismissProposal(proposalId);
+    return {
+      content: "No problem! Let me know if you change your mind.",
+      format: 'text',
+      structuredData: null,
+      skillId: null,
+      suggestedActions: [],
+    };
+  }
+}
+
+function proposalToSkillInput(botId: string, proposal: SkillProposal): SkillCreateInput {
+  const hasFields = proposal.suggestedInputFields.length > 0;
+  return {
+    botId: botId as BotId,
+    name: proposal.proposedName,
+    description: proposal.description,
+    triggerPatterns: proposal.triggerExamples,
+    // Fallback prompt — SkillGenerator will override this when generation succeeds
+    behaviorPrompt: buildBehaviorPrompt(proposal),
+    inputSchema: hasFields ? fieldsToJsonSchema(proposal.suggestedInputFields) : null,
+    outputFormat: 'text',
+    schedule: proposal.suggestedSchedule,
+    needsHistory: true,
+    needsMemory: false,
+    readsData: hasFields,
+    readableTables: [],
+    requiredIntegrations: [],
+    createdBy: 'auto_proposed',
+  };
+}
+
+/** Override template fields with LLM-generated equivalents. */
+function mergeGenerated(base: SkillCreateInput, generated: SkillGenerationResult): SkillCreateInput {
+  return {
+    ...base,
+    behaviorPrompt: generated.behaviorPrompt || base.behaviorPrompt,
+    triggerPatterns: generated.triggerPatterns.length > 0 ? generated.triggerPatterns : base.triggerPatterns,
+    description: generated.description || base.description,
+    needsHistory: generated.needsHistory,
+    needsMemory: generated.needsMemory,
+    readsData: generated.readsData,
+  };
+}
+
+/**
+ * Build a simplified DDL preview from a proposal's input fields.
+ * Passed to the skill generator so it can reference real column names.
+ */
+function proposalToDDL(proposal: SkillProposal): string | null {
+  if (proposal.suggestedInputFields.length === 0) return null;
+  const tableName = proposal.proposedName.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_');
+  const cols = [
+    '  id UUID PRIMARY KEY DEFAULT gen_random_uuid()',
+    '  logged_at TIMESTAMPTZ NOT NULL DEFAULT now()',
+  ];
+  for (const f of proposal.suggestedInputFields) {
+    const pgType =
+      f.type === 'number' ? 'DOUBLE PRECISION'
+      : f.type === 'integer' ? 'INTEGER'
+      : f.type === 'boolean' ? 'BOOLEAN'
+      : 'TEXT';
+    const nullClause = f.required ? 'NOT NULL' : '';
+    cols.push(`  ${f.name} ${pgType} ${nullClause}`.trim());
+  }
+  cols.push('  created_at TIMESTAMPTZ NOT NULL DEFAULT now()');
+  return `CREATE TABLE ${tableName} (\n${cols.join(',\n')}\n);`;
+}
+
+/**
+ * Format a refinement result as a user-visible preview.
+ */
+function formatRefinementPreview(skillName: string, result: SkillRefinementResult): string {
+  const lines = [
+    `I've generated an improved version of **${skillName}**. Here's what would change:`,
+    '',
+    result.changesSummary || '(no summary provided)',
+    '',
+    'Want me to apply these changes?',
+  ];
+  return lines.join('\n');
+}
+
+function buildBehaviorPrompt(proposal: SkillProposal): string {
+  const { description, suggestedInputFields, dataModel } = proposal;
+
+  if (suggestedInputFields.length === 0) {
+    return `## What this skill does\n${description}\n\nBe helpful and concise. Never expose internal details to the user.`;
+  }
+
+  const requiredFields = suggestedInputFields.filter((f) => f.required).map((f) => f.name);
+  const fieldList = suggestedInputFields
+    .map((f) => `- **${f.name}** (${f.type}${f.required ? ', required' : ', optional'}): ${f.description}`)
+    .join('\n');
+
+  const dataModelLabel =
+    dataModel === 'daily_total' ? 'daily total (one entry per day, updated in-place)'
+    : dataModel === 'singleton' ? 'singleton (one row, always overwritten)'
+    : 'per event (new row for every logged event)';
+
+  const insertOrUpdateSection =
+    dataModel === 'daily_total'
+      ? `## Logging or updating
+1. Extract fields from the user's message. Required: ${requiredFields.join(', ') || 'none'}.
+2. If logged_at is not mentioned, omit it — the database defaults to now.
+3. Call query_skill_data to check whether an entry already exists for today:
+   SELECT * FROM {table} WHERE logged_at::date = CURRENT_DATE ORDER BY logged_at DESC LIMIT 1
+4. If a row exists: add the new value to the existing total and call update_skill_data.
+5. If no row exists: call insert_skill_data.
+6. Confirm concisely: "Logged X. Today's total: Y." Do not repeat all fields back.`
+    : dataModel === 'singleton'
+      ? `## Updating the current state
+1. Extract fields from the user's message. Required: ${requiredFields.join(', ') || 'none'}.
+2. Call query_skill_data to check whether a row already exists: SELECT COUNT(*) FROM {table}
+3. If a row exists: call update_skill_data to overwrite it.
+4. If no row exists: call insert_skill_data.
+5. Confirm concisely what was set.`
+      : `## Logging a new entry
+1. Extract fields from the user's message. Required: ${requiredFields.join(', ') || 'none'}.
+2. If logged_at is not mentioned, omit it — the database defaults to now.
+3. Call insert_skill_data with the extracted data.
+4. Confirm concisely: "Logged." Do not repeat all fields back.`;
+
+  const addMoreSection =
+    dataModel === 'daily_total'
+      ? `## Handling "X more" or "another X"
+Query today's entry first. Add X to the existing value. Call update_skill_data with the new total.`
+      : `## Handling "X more" or "another X"
+Treat as a new separate entry. Call insert_skill_data with the value X.`;
+
+  return `## What this skill does
+${description}
+
+## Data model: ${dataModelLabel}
+
+## Fields
+${fieldList}
+- **logged_at** (timestamp, optional): When this event occurred. Defaults to now if omitted. Understand natural language like "yesterday", "this morning", "last Tuesday" and convert to ISO 8601.
+
+${insertOrUpdateSection}
+
+${addMoreSection}
+
+## Querying data
+When the user asks to view, list, search, or summarize:
+- Use query_skill_data with appropriate SQL.
+- "today" → WHERE logged_at::date = CURRENT_DATE
+- "this week" → WHERE logged_at >= date_trunc('week', now())
+- "yesterday" → WHERE logged_at::date = CURRENT_DATE - 1
+- "last 7 days" → WHERE logged_at >= now() - INTERVAL '7 days'
+- Present results in a readable format. Never show raw SQL, table names, or column names.
+
+## Edge cases
+- Missing required fields: ask the user before calling insert_skill_data. Do not guess.
+- Retroactive logging ("I walked 8k steps yesterday"): parse the time reference and pass it as logged_at.
+- Ambiguous update targets: if multiple rows match and it's unclear which to update, ask the user.
+- Never expose table names, schema names, or SQL syntax to the user.`;
+}
+
+function fieldsToJsonSchema(fields: FieldSuggestion[]): Record<string, unknown> {
+  const properties: Record<string, unknown> = {};
+  const required: string[] = [];
+  for (const f of fields) {
+    properties[f.name] = { type: f.type, description: f.description };
+    if (f.required) required.push(f.name);
+  }
+  return { type: 'object', properties, required };
 }
 
 function formatSkillProposal(proposal: SkillProposal): ProcessedResponse {
@@ -599,4 +1086,25 @@ function buildLearningClarification(serviceName: string): ProcessedResponse {
     skillId: null,
     suggestedActions: ['Yes, search for it', 'No thanks'],
   };
+}
+
+/**
+ * Quick check: does this conversation turn likely contain personal facts worth
+ * persisting to memory? Avoids calling the memory extraction LLM on pure
+ * command messages like "log a sale" or "what time is it".
+ */
+const PERSONAL_FACT_SIGNALS = [
+  /\bmy name\b/i,
+  /\bi'?m\b/i,
+  /\bwe'?re\b/i,
+  /\b(my|our) (business|company|shop|store|bakery|studio|firm|agency)\b/i,
+  /\bi (prefer|like|always|usually|typically)\b/i,
+  /\b(based|located) in\b/i,
+  /\b\d+\s+(employees?|staff|people|team members?)\b/i,
+  /\bmy (email|phone|address|website|contact)\b/i,
+];
+
+function mightContainPersonalFacts(userMessage: string, assistantResponse: string): boolean {
+  const combined = userMessage + ' ' + assistantResponse;
+  return PERSONAL_FACT_SIGNALS.some((p) => p.test(combined));
 }

@@ -1,6 +1,7 @@
-import type { UserMessage, Message } from '../../common/types/message.js';
+import type { UserMessage } from '../../common/types/message.js';
 import type { SkillDefinition } from '../../common/types/skill.js';
-import type { SkillProposal } from '../../common/types/orchestrator.js';
+import type { SkillProposal, ToolDefinition } from '../../common/types/orchestrator.js';
+import type { LLMGatewayPort } from '../orchestrator/message-orchestrator.js';
 
 /**
  * SkillProposer — Spec #2 interface implementation.
@@ -9,238 +10,237 @@ import type { SkillProposal } from '../../common/types/orchestrator.js';
  * "self-building" magic: the bot recognizes a repeatable need and
  * offers to learn how to handle it.
  *
- * A proposal triggers when ALL conditions are met:
- * 1. No existing skill matched the message
- * 2. The message implies a REPEATABLE need (not a one-off question)
- * 3. The user hasn't dismissed a similar proposal recently
+ * Uses a cheap LLM (intent_classification tier) to decide whether to
+ * propose and to generate the proposal structure — name, description,
+ * trigger examples, optional cron schedule, and clarifying questions.
  *
- * Conservative by default at launch (Spec #2 decision).
+ * A proposal triggers only when ALL conditions are met:
+ * 1. No existing skill matched the message
+ * 2. The LLM judges the message as describing a REPEATABLE need
+ * 3. The user hasn't dismissed a similar proposal in the last 7 days
  */
-
-/**
- * Signals that a message describes a repeatable need, not a one-off.
- */
-const REPEATABILITY_SIGNALS = {
-  // Time-based language → recurring task
-  temporal: [
-    /every\s+(morning|evening|day|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i,
-    /daily|weekly|monthly/i,
-    /remind\s+me\s+(to|about|that)/i,
-    /at\s+\d{1,2}(:\d{2})?\s*(am|pm)/i,
-    /each\s+(day|week|month|time)/i,
-  ],
-  // Tracking language → persistent data
-  tracking: [
-    /keep\s+track\s+of/i,
-    /track\s+(my|the|our)/i,
-    /log\s+(my|the|this|a)/i,
-    /record\s+(my|the|this|a|every)/i,
-    /save\s+(this|my|the)/i,
-    /add\s+(this|a|new)\s+.*(to|in)\s+(my|the)/i,
-  ],
-  // Template language → repeating creation
-  templating: [
-    /draft\s+(a|an|the|me)/i,
-    /write\s+(a|an|the|me)/i,
-    /create\s+(a|an|the|me).*\s+(for|about)/i,
-    /generate\s+(a|an|the|me)/i,
-  ],
-  // Aggregation language → data analysis over time
-  aggregation: [
-    /how\s+many/i,
-    /which\s+ones/i,
-    /summarize/i,
-    /summary\s+of/i,
-    /total\s+(for|of|this)/i,
-    /what('s|\s+is)\s+the\s+(total|average|count)/i,
-    /top\s+\d+/i,
-    /compare|trend|analysis/i,
-  ],
-};
 
 export interface ProposalContext {
   recentDismissals: { proposedName: string; dismissedAt: Date }[];
 }
 
+// ─── System prompt ──────────────────────────────────────────────
+
+const SYSTEM_PROMPT = `You are a skill-proposal assistant for a personal AI bot.
+
+Your job: read a user message and decide whether it describes a **repeatable, automatable need** that warrants creating a permanent skill.
+
+## Propose when the message implies:
+- A recurring task (daily, weekly, "every morning", "remind me every...")
+- Ongoing tracking (expenses, orders, workouts, inventory)
+- A template the user will reuse (draft emails, reports, summaries)
+- A standing query they'll ask repeatedly (aggregations, reports)
+- **Reminder or notification requests** — even one-off ones. If someone asks to be reminded
+  of a call, meeting, task, or deadline, propose a Reminder skill. They'll likely want it again.
+
+## Do NOT propose for:
+- One-off questions ("what time is it?", "what is the capital of France?")
+- General chat ("hello", "thanks")
+- Pure mechanical timers with no domain context ("set a timer for 1 hour" — no content to track)
+- Factual lookups with no recurring pattern
+
+## Output (JSON tool call — always use the tool):
+If the message warrants a skill: call \`propose_skill\` with all fields.
+If it does NOT warrant a skill: call \`no_proposal\` with a brief reason.
+
+## Cron schedule format:
+Use standard 5-field cron: "minute hour day-of-month month day-of-week"
+- "every morning" → "30 6 * * *"
+- "every evening" → "0 19 * * *"
+- "daily" / "every day" → "0 9 * * *"
+- "weekly" / "every week" → "0 9 * * 1"
+- "at 8AM" → "0 8 * * *", "at 3PM" → "0 15 * * *"
+- "every Monday" → "0 9 * * 1"
+Only include schedule if the message specifies timing. Otherwise leave null.
+
+## Name rules:
+- 2-4 words, title case
+- No time strings ("3PM", "Monday", "daily") in the name
+- Bad: "Call Supplier At 3pm Reminder" → Good: "Call Supplier Reminder"
+
+## Data model — choose the right one:
+- **per_entry**: Each action creates a new row (workouts, sales, expenses, meals, notes). Use when users will log multiple items per day and each one matters individually.
+- **daily_total**: One row per day, updated in-place ("1000 more steps" adds to today's row). Use when the user tracks a running daily aggregate (steps, water intake, screen time).
+- **singleton**: A single row that gets overwritten each time (current mood, today's goal, active task). Use for "current state" skills with no history.
+
+## Fields — IMPORTANT rules:
+- Do NOT suggest date, time, datetime, or timestamp fields. Every skill table already has a \`logged_at\` column (TIMESTAMPTZ, defaults to now) that handles all time tracking automatically.
+- Only suggest fields for the actual domain data (amounts, names, counts, categories, notes, etc.).
+- Keep fields minimal — only what's needed to make the skill useful.`;
+
+// ─── Tool definitions ───────────────────────────────────────────
+
+const TOOLS: ToolDefinition[] = [
+  {
+    name: 'propose_skill',
+    description: 'Propose a new skill for the user to approve',
+    parameters: {
+      type: 'object',
+      properties: {
+        proposedName: {
+          type: 'string',
+          description: 'Short descriptive name (2-4 words, title case, no time strings)',
+        },
+        description: {
+          type: 'string',
+          description: 'One sentence: what this skill does for the user',
+        },
+        triggerExamples: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '3-4 example phrases that would trigger this skill',
+        },
+        suggestedInputFields: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              type: { type: 'string', enum: ['string', 'number', 'boolean', 'date'] },
+              description: { type: 'string' },
+              required: { type: 'boolean' },
+            },
+            required: ['name', 'type', 'description', 'required'],
+          },
+          description: 'Input fields needed when running this skill (empty for scheduled/reminder skills)',
+        },
+        suggestedSchedule: {
+          type: ['string', 'null'],
+          description: 'Cron expression if this is a scheduled skill, otherwise null',
+        },
+        clarifyingQuestions: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '1-2 questions to ask the user before creating the skill',
+        },
+        confidence: {
+          type: 'number',
+          minimum: 0,
+          maximum: 1,
+          description: 'How confident (0-1) that this message warrants a skill',
+        },
+        dataModel: {
+          type: 'string',
+          enum: ['per_entry', 'daily_total', 'singleton'],
+          description: 'How data is stored: per_entry=new row each time, daily_total=one row per day updated in-place, singleton=single overwritten row',
+        },
+      },
+      required: [
+        'proposedName',
+        'description',
+        'triggerExamples',
+        'suggestedInputFields',
+        'suggestedSchedule',
+        'clarifyingQuestions',
+        'confidence',
+        'dataModel',
+      ],
+    },
+  },
+  {
+    name: 'no_proposal',
+    description: 'Indicate this message does not warrant a skill proposal',
+    parameters: {
+      type: 'object',
+      properties: {
+        reason: { type: 'string', description: 'Brief reason why no proposal is warranted' },
+      },
+      required: ['reason'],
+    },
+  },
+];
+
+// ─── Main export ────────────────────────────────────────────────
+
 /**
  * Evaluate whether to propose a new skill based on the user's message.
+ * Uses a cheap LLM — runs only on the no-match path.
  */
-export function evaluateForProposal(
+export async function evaluateForProposal(
   message: UserMessage,
-  existingSkills: SkillDefinition[],
+  skills: SkillDefinition[],
   context: ProposalContext,
-): SkillProposal | null {
-  const text = message.content;
-
-  // Check repeatability signals
-  const signals = detectRepeatabilitySignals(text);
-  if (signals.length === 0) {
-    return null; // One-off question, don't propose
-  }
-
-  // Extract what the user wants to do
-  const intent = extractIntent(text);
-  if (!intent) {
-    return null;
-  }
-
-  // Check if we recently dismissed a similar proposal (7-day cooldown)
+  llm: LLMGatewayPort,
+): Promise<SkillProposal | null> {
+  // Check dismissal cooldown first (cheap — no LLM needed)
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+  // Call cheap LLM to decide whether to propose
+  const llmResponse = await llm.complete(
+    {
+      system: SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: message.content }],
+      tools: TOOLS,
+    },
+    { taskType: 'intent_classification', streaming: false },
+  );
+
+  // Parse the tool call
+  const proposal = parseLLMResponse(llmResponse);
+  if (!proposal) return null;
+
+  // Check dismissal cooldown against the LLM-generated name
   const recentlyDismissed = context.recentDismissals.some(
     (d) => d.dismissedAt > sevenDaysAgo
-      && similarity(d.proposedName, intent.name) > 0.6,
+      && similarity(d.proposedName, proposal.proposedName) > 0.6,
   );
-  if (recentlyDismissed) {
+  if (recentlyDismissed) return null;
+
+  return proposal;
+}
+
+// ─── Response parsing ───────────────────────────────────────────
+
+function parseLLMResponse(response: { content: string; toolCalls: { toolName: string; arguments: Record<string, unknown> }[] }): SkillProposal | null {
+  const { toolCalls } = response;
+  if (!toolCalls || toolCalls.length === 0) return null;
+
+  const call = toolCalls[0];
+  if (!call || call.toolName !== 'propose_skill') return null;
+
+  const input = call.arguments;
+  if (!input || typeof input !== 'object') return null;
+
+  try {
+    return {
+      proposedName: String(input.proposedName ?? ''),
+      description: String(input.description ?? ''),
+      triggerExamples: Array.isArray(input.triggerExamples)
+        ? (input.triggerExamples as unknown[]).map(String)
+        : [],
+      suggestedInputFields: Array.isArray(input.suggestedInputFields)
+        ? (input.suggestedInputFields as unknown[]).map((f) => {
+            const field = f as Record<string, unknown>;
+            return {
+              name: String(field.name ?? ''),
+              type: String(field.type ?? 'string'),
+              description: String(field.description ?? ''),
+              required: Boolean(field.required),
+            };
+          })
+        : [],
+      suggestedSchedule: input.suggestedSchedule != null ? String(input.suggestedSchedule) : null,
+      clarifyingQuestions: Array.isArray(input.clarifyingQuestions)
+        ? (input.clarifyingQuestions as unknown[]).map(String)
+        : [],
+      confidence: typeof input.confidence === 'number'
+        ? Math.max(0, Math.min(1, input.confidence))
+        : 0.7,
+      dataModel: (['per_entry', 'daily_total', 'singleton'] as const).includes(input.dataModel as 'per_entry' | 'daily_total' | 'singleton')
+        ? (input.dataModel as 'per_entry' | 'daily_total' | 'singleton')
+        : 'per_entry',
+    };
+  } catch {
     return null;
   }
-
-  return {
-    proposedName: intent.name,
-    description: intent.description,
-    triggerExamples: intent.triggerExamples,
-    suggestedInputFields: intent.fields,
-    suggestedSchedule: intent.schedule,
-    clarifyingQuestions: intent.questions,
-    confidence: Math.min(signals.length * 0.3, 0.9), // more signals = higher confidence
-  };
 }
 
-// ─── Signal Detection ──────────────────────────────────────────
-
-interface Signal {
-  category: string;
-  pattern: RegExp;
-  match: string;
-}
-
-function detectRepeatabilitySignals(text: string): Signal[] {
-  const signals: Signal[] = [];
-
-  for (const [category, patterns] of Object.entries(REPEATABILITY_SIGNALS)) {
-    for (const pattern of patterns) {
-      const match = text.match(pattern);
-      if (match) {
-        signals.push({ category, pattern, match: match[0] });
-        break; // One match per category is enough
-      }
-    }
-  }
-
-  return signals;
-}
-
-// ─── Intent Extraction ─────────────────────────────────────────
-
-interface ExtractedIntent {
-  name: string;
-  description: string;
-  triggerExamples: string[];
-  fields: { name: string; type: string; description: string; required: boolean }[];
-  schedule: string | null;
-  questions: string[];
-}
-
-/**
- * Basic intent extraction from the message text.
- *
- * This is a rule-based first pass. The full LLM-powered intent extraction
- * will be added when the LLM Gateway is integrated — the LLM can generate
- * much richer skill proposals. This handles the common patterns.
- */
-function extractIntent(text: string): ExtractedIntent | null {
-  const lower = text.toLowerCase();
-
-  // "keep track of X" / "track my X"
-  const trackMatch = lower.match(/(?:keep\s+)?track\s+(?:of\s+)?(?:my\s+)?(.+?)(?:\.|$)/i);
-  if (trackMatch) {
-    const thing = trackMatch[1].trim();
-    return {
-      name: `${capitalize(thing)} Tracker`,
-      description: `Track and manage your ${thing}`,
-      triggerExamples: [`new ${thing}`, `add ${thing}`, `what ${thing} do I have`, `show my ${thing}`],
-      fields: [{ name: 'description', type: 'string', description: `Details about the ${thing}`, required: true }],
-      schedule: null,
-      questions: [`What details should I capture for each ${thing}?`],
-    };
-  }
-
-  // "remind me to X every Y" / "remind me at 3pm to X"
-  // Handle both "remind me to TASK at TIME" and "remind me at TIME to TASK"
-  const remindAtTimeFirst = lower.match(/remind\s+me\s+(?:at|on|every)\s+(.+?)\s+to\s+(.+?)$/i);
-  const remindTaskFirst = lower.match(/remind\s+me\s+(?:to\s+)?(.+?)\s+(?:every|at|on)\s+(.+?)$/i);
-  const remindPlainMatch = lower.match(/remind\s+me\s+(?:to\s+)?(.+?)$/i);
-
-  let remindTask: string | null = null;
-  let remindTiming: string | null = null;
-
-  if (remindAtTimeFirst) {
-    // "remind me at 3pm to check the oven" → timing=3pm, task=check the oven
-    remindTiming = remindAtTimeFirst[1].trim();
-    remindTask = remindAtTimeFirst[2].trim();
-  } else if (remindTaskFirst) {
-    // "remind me to call supplier every monday" → task=call supplier, timing=monday
-    remindTask = remindTaskFirst[1].trim();
-    remindTiming = remindTaskFirst[2]?.trim() ?? null;
-  } else if (remindPlainMatch) {
-    // "remind me to call supplier" → task=call supplier, no timing
-    remindTask = remindPlainMatch[1].trim();
-  }
-
-  if (remindTask) {
-    const task = remindTask;
-    const timing = remindTiming;
-    return {
-      name: `${capitalize(task)} Reminder`,
-      description: `Remind you to ${task}`,
-      triggerExamples: [`remind me to ${task}`, `don't forget ${task}`, `${task} reminder`],
-      fields: [],
-      schedule: timing ? guessSchedule(timing) : null,
-      questions: timing ? [] : ['When should I remind you?'],
-    };
-  }
-
-  // "every morning/day/week send me X"
-  const briefingMatch = lower.match(/every\s+(morning|evening|day|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(?:send|give|tell)\s+me\s+(.+)/i);
-  if (briefingMatch) {
-    const frequency = briefingMatch[1];
-    const content = briefingMatch[2].trim();
-    return {
-      name: `${capitalize(frequency)} ${capitalize(content)}`,
-      description: `Send you a ${content} every ${frequency}`,
-      triggerExamples: [`what's my ${content}`, `show ${content}`, `${frequency} ${content}`],
-      fields: [],
-      schedule: guessSchedule(frequency),
-      questions: [`What should I include in your ${content}?`],
-    };
-  }
-
-  // "log my X" / "record my X"
-  const logMatch = lower.match(/(?:log|record)\s+(?:my\s+)?(.+?)(?:\.|$)/i);
-  if (logMatch) {
-    const thing = logMatch[1].trim();
-    return {
-      name: `${capitalize(thing)} Log`,
-      description: `Log and track your ${thing}`,
-      triggerExamples: [`log ${thing}`, `record ${thing}`, `add ${thing} entry`, `show ${thing} log`],
-      fields: [
-        { name: 'entry', type: 'string', description: `The ${thing} entry`, required: true },
-        { name: 'date', type: 'string', description: 'Date of the entry', required: false },
-      ],
-      schedule: null,
-      questions: [`What information should I capture when you log ${thing}?`],
-    };
-  }
-
-  // Fallback: if we detected signals but can't extract a clear intent,
-  // return null and let the LLM-based proposer handle it later.
-  return null;
-}
-
-// ─── Helpers ───────────────────────────────────────────────────
-
-function capitalize(str: string): string {
-  return str.split(' ').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-}
+// ─── Helpers ────────────────────────────────────────────────────
 
 function similarity(a: string, b: string): number {
   const aTokens = new Set(a.toLowerCase().split(/\s+/));
@@ -251,31 +251,4 @@ function similarity(a: string, b: string): number {
   }
   const union = aTokens.size + bTokens.size - intersection;
   return union === 0 ? 0 : intersection / union;
-}
-
-function guessSchedule(timing: string): string | null {
-  const lower = timing.toLowerCase();
-  if (lower.includes('morning')) return '30 6 * * *';   // 6:30 AM
-  if (lower.includes('evening')) return '0 19 * * *';    // 7:00 PM
-  if (lower.includes('daily') || lower.includes('day')) return '0 9 * * *'; // 9:00 AM
-  if (lower.includes('weekly') || lower.includes('week')) return '0 9 * * 1'; // Monday 9 AM
-  if (lower.includes('monday')) return '0 9 * * 1';
-  if (lower.includes('tuesday')) return '0 9 * * 2';
-  if (lower.includes('wednesday')) return '0 9 * * 3';
-  if (lower.includes('thursday')) return '0 9 * * 4';
-  if (lower.includes('friday')) return '0 9 * * 5';
-  if (lower.includes('saturday')) return '0 9 * * 6';
-  if (lower.includes('sunday')) return '0 9 * * 0';
-
-  // Try to parse "at 3pm" style
-  const timeMatch = lower.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/);
-  if (timeMatch) {
-    let hour = parseInt(timeMatch[1], 10);
-    const minute = parseInt(timeMatch[2] ?? '0', 10);
-    if (timeMatch[3] === 'pm' && hour < 12) hour += 12;
-    if (timeMatch[3] === 'am' && hour === 12) hour = 0;
-    return `${minute} ${hour} * * *`;
-  }
-
-  return null;
 }
