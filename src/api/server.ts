@@ -5,6 +5,7 @@ import { botRoutes } from './routes/bot-routes.js';
 import { skillRoutes } from './routes/skill-routes.js';
 import { toolRoutes } from './routes/tool-routes.js';
 import { chatRoutes } from './routes/chat-routes.js';
+import { documentRoutes } from './routes/document-routes.js';
 import { registerErrorHandler } from './middleware/error-handler.js';
 import { registerAuth } from './middleware/auth.js';
 import { extractBotId, extractBotIdFromResource, verifyBotOwnership } from './middleware/ownership.js';
@@ -28,6 +29,8 @@ import * as memoryRepo from '../database/repositories/memory-repository.js';
 import * as skillDataRepo from '../database/repositories/skill-data-repository.js';
 import * as proposalRepo from '../database/repositories/skill-proposal-repository.js';
 import * as refinementRepo from '../database/repositories/skill-refinement-repository.js';
+import * as chunkRepo from '../database/repositories/chunk-repository.js';
+import { getEmbedding } from '../knowledge/embedding-service.js';
 
 // Augment Fastify so routes can access the scheduler
 declare module 'fastify' {
@@ -120,9 +123,15 @@ export async function createServer(config: ServerConfig) {
       return memoryRepo.getFactsByBotId(botId, keyQuery);
     },
 
-    async loadRAGResults(_botId, _query) {
-      // TODO: Vector search against Knowledge Store
-      return [];
+    async loadRAGResults(botId, ragQuery) {
+      if (!ragQuery || !config.openaiApiKey) return [];
+      try {
+        const embedding = await getEmbedding(ragQuery, config.openaiApiKey);
+        return chunkRepo.searchChunks(botId, embedding, 5);
+      } catch (err) {
+        console.warn('[rag] Vector search failed:', (err as Error).message);
+        return [];
+      }
     },
 
     async loadSkillData(botId: string, tableName: string, dataQuery: string | null) {
@@ -210,7 +219,8 @@ export async function createServer(config: ServerConfig) {
   await app.register(skillRoutes);
   await app.register(toolRoutes);
   await app.register(usageRoutes);
-  chatRoutes(app, orchestrator, trackedGateway);
+  chatRoutes(app, orchestrator, trackedGateway, scheduler);
+  documentRoutes(app, config.openaiApiKey);
 
   // Health check
   app.get('/health', async () => ({ status: 'ok' }));

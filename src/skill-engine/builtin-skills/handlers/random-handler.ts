@@ -82,13 +82,34 @@ function generateRandomNumber(min: number, max: number): number {
 }
 
 function generatePassword(length: number): string {
-  const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*_+-=';
-  const bytes = crypto.randomBytes(length);
-  let password = '';
-  for (let i = 0; i < length; i++) {
-    password += charset[bytes[i] % charset.length];
+  const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const lower = 'abcdefghijklmnopqrstuvwxyz';
+  const digits = '0123456789';
+  const symbols = '!@#$%^&*_+-=';
+  const charset = upper + lower + digits + symbols;
+
+  // Guarantee at least one character from each class
+  const guaranteed = [
+    upper[crypto.randomBytes(1)[0] % upper.length],
+    lower[crypto.randomBytes(1)[0] % lower.length],
+    digits[crypto.randomBytes(1)[0] % digits.length],
+    symbols[crypto.randomBytes(1)[0] % symbols.length],
+  ];
+
+  const remaining: string[] = [];
+  const bytes = crypto.randomBytes(length - guaranteed.length);
+  for (let i = 0; i < length - guaranteed.length; i++) {
+    remaining.push(charset[bytes[i] % charset.length]);
   }
-  return password;
+
+  // Shuffle guaranteed + remaining using Fisher-Yates
+  const all = [...guaranteed, ...remaining];
+  const shuffleBytes = crypto.randomBytes(all.length);
+  for (let i = all.length - 1; i > 0; i--) {
+    const j = shuffleBytes[i] % (i + 1);
+    [all[i], all[j]] = [all[j], all[i]];
+  }
+  return all.join('');
 }
 
 // ─── Handler ─────────────────────────────────────────────────────

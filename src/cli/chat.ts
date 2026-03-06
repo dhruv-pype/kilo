@@ -307,7 +307,18 @@ async function main() {
     async loadMemoryFacts(botId: string, keyQuery: string | null) {
       return memoryRepo.getFactsByBotId(botId, keyQuery);
     },
-    async loadRAGResults() { return []; },
+    async loadRAGResults(botId: string, ragQuery: string | null) {
+      const openaiKey = process.env.OPENAI_API_KEY;
+      if (!ragQuery || !openaiKey) return [];
+      try {
+        const { getEmbedding } = await import('../knowledge/embedding-service.js');
+        const { searchChunks } = await import('../database/repositories/chunk-repository.js');
+        const embedding = await getEmbedding(ragQuery, openaiKey);
+        return searchChunks(botId, embedding, 5);
+      } catch {
+        return [];
+      }
+    },
     async loadSkillData() { return { tableName: '', rows: [], totalCount: 0 }; },
     async loadTableSchemas() { return []; },
     async loadRecentDismissals() { return []; },

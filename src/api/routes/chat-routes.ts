@@ -2,7 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import type { MessageOrchestrator } from '../../bot-runtime/orchestrator/message-orchestrator.js';
 import type { TrackedLLMGateway } from '../../llm-gateway/tracked-llm-gateway.js';
+import type { CronScheduler } from '../../scheduler/cron-scheduler.js';
 import * as messageRepo from '../../database/repositories/message-repository.js';
+import * as notificationRepo from '../../database/repositories/notification-repository.js';
 import { messageId, sessionId } from '../../common/types/ids.js';
 import type { BotId } from '../../common/types/ids.js';
 import type { Attachment } from '../../common/types/message.js';
@@ -31,6 +33,7 @@ export function chatRoutes(
   app: FastifyInstance,
   orchestrator: MessageOrchestrator,
   trackedGateway?: TrackedLLMGateway,
+  scheduler?: CronScheduler,
 ): void {
 
   app.post<{
@@ -92,7 +95,7 @@ export function chatRoutes(
     });
 
     // Process side effects asynchronously (don't block the response)
-    processSideEffects(result.sideEffects, body.botId).catch((err) => {
+    processSideEffects(result.sideEffects, body.botId, authenticatedUserId as string, scheduler).catch((err) => {
       console.error('Side effect processing failed:', err);
     });
 
@@ -111,6 +114,8 @@ export function chatRoutes(
 async function processSideEffects(
   sideEffects: import('../../common/types/orchestrator.js').SideEffect[],
   botId: string,
+  userId: string,
+  scheduler?: CronScheduler,
 ): Promise<void> {
   for (const effect of sideEffects) {
     switch (effect.type) {
@@ -150,7 +155,7 @@ async function processSideEffects(
         }
         break;
       case 'schedule_notification':
-        scheduleNotification(botId, effect.message, effect.at, effect.recurring).catch((err) => {
+        scheduleNotification(botId, userId, effect.message, effect.at, effect.recurring, effect.sessionId, scheduler).catch((err) => {
           console.error('[side-effect] schedule_notification failed:', (err as Error).message);
         });
         break;
@@ -180,65 +185,81 @@ async function processSideEffects(
 /**
  * Schedule a one-time (or recurring) notification.
  *
- * One-time: uses setTimeout. Max delay is ~24.8 days (JS limit). Notifications
- * further out are stored in the DB and not yet delivered (future BullMQ/Temporal work).
+ * One-time within 24.8 days: uses setTimeout. When fired, inserts an assistant
+ * message into the user's session so they see it the next time they open chat.
  *
- * When it fires: inserts an assistant message into the messages table so the
- * user sees it when they next open the chat. Also logs to stdout.
+ * One-time further out: logged (BullMQ/Temporal needed for long-range scheduling).
  *
- * Recurring: registered as a persistent cron job (future work — logs for now).
+ * Recurring: persisted to DB and registered as a cron job in the scheduler
+ * so it survives server restarts.
  */
 async function scheduleNotification(
   botId: string,
+  userId: string,
   message: string,
   at: Date,
   recurring: string | null,
+  notifSessionId: string,
+  scheduler?: CronScheduler,
 ): Promise<void> {
-  const delayMs = at.getTime() - Date.now();
-  const MAX_SETTIMEOUT_MS = 2_147_483_647; // ~24.8 days — JS limit
-
   if (recurring) {
-    // Recurring notifications use cron — logged for now, will need persistent storage
-    console.log(`[scheduler] Recurring notification registered (cron: ${recurring}): "${message}"`);
+    try {
+      const notificationId = await notificationRepo.insertNotification(
+        botId,
+        userId,
+        notifSessionId,
+        message,
+        recurring,
+      );
+      if (scheduler) {
+        scheduler.registerNotificationJob(notificationId, botId, userId, notifSessionId, message, recurring);
+        console.log(`[scheduler] Recurring notification registered (cron: ${recurring}): "${message}"`);
+      } else {
+        console.warn('[scheduler] Recurring notification persisted but no scheduler available to register job');
+      }
+    } catch (err) {
+      console.error('[scheduler] Failed to persist recurring notification:', (err as Error).message);
+    }
     return;
   }
 
+  const delayMs = at.getTime() - Date.now();
+  const MAX_SETTIMEOUT_MS = 2_147_483_647; // ~24.8 days — JS limit
+
   if (delayMs <= 0) {
-    // Already past — fire immediately
-    await fireNotification(botId, message);
+    await fireNotification(botId, userId, notifSessionId, message);
     return;
   }
 
   if (delayMs > MAX_SETTIMEOUT_MS) {
-    // Too far out — log and skip (BullMQ/Temporal needed for long-range scheduling)
     console.log(`[scheduler] Notification too far in future (${Math.round(delayMs / 86400000)}d): "${message}"`);
     return;
   }
 
   console.log(`[scheduler] Notification scheduled in ${Math.round(delayMs / 1000)}s: "${message}"`);
   setTimeout(() => {
-    fireNotification(botId, message).catch((err) => {
+    fireNotification(botId, userId, notifSessionId, message).catch((err) => {
       console.error('[scheduler] Failed to fire notification:', (err as Error).message);
     });
   }, delayMs);
 }
 
 /**
- * Fire a notification — writes it as an assistant message so it appears in
- * the conversation history when the user next loads their chat.
+ * Fire a notification — writes it as an assistant message in the user's session
+ * so it appears in the conversation history when they next open chat.
  */
-async function fireNotification(botId: string, message: string): Promise<void> {
-  const NOTIFICATION_SESSION = 'notifications';
+async function fireNotification(botId: string, userId: string, notifSessionId: string, message: string): Promise<void> {
   console.log(`\n🔔 NOTIFICATION [bot: ${botId}]: ${message}\n`);
   try {
+    const { requestContext } = await import('../../database/request-context.js');
+    requestContext.enterWith({ userId });
     await messageRepo.insertMessage({
-      sessionId: NOTIFICATION_SESSION,
+      sessionId: notifSessionId,
       botId,
       role: 'assistant',
       content: `🔔 **Reminder**: ${message}`,
     });
   } catch (err) {
-    // DB might not be available at fire time — just log
     console.error('[scheduler] Could not persist notification:', (err as Error).message);
   }
 }

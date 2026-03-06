@@ -165,7 +165,7 @@ export type SideEffect =
   | { type: 'memory_write'; facts: MemoryFact[] }
   | { type: 'skill_proposal'; proposalId: string; proposal: SkillProposal }
   | { type: 'skill_data_write'; table: string; operation: 'insert' | 'update' | 'delete'; data: Record<string, unknown> }
-  | { type: 'schedule_notification'; message: string; at: Date; recurring: string | null }
+  | { type: 'schedule_notification'; message: string; at: Date; recurring: string | null; sessionId: string }
   | { type: 'analytics_event'; event: string; properties: Record<string, unknown> }
   | { type: 'api_call'; toolName: string; endpoint: string; status: number; latencyMs: number }
   | { type: 'learning_proposal'; proposal: LearningProposalRef }

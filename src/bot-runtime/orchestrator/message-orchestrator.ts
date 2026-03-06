@@ -425,6 +425,7 @@ export class MessageOrchestrator {
           message: toolCall.arguments.message as string,
           at: new Date(toolCall.arguments.at as string),
           recurring: (toolCall.arguments.recurring as string) ?? null,
+          sessionId,
         });
       }
     }

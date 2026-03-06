@@ -3,6 +3,7 @@ import * as skillRepo from '../../database/repositories/skill-repository.js';
 import * as skillCreator from '../../skill-engine/skill-creator.js';
 import * as botRepo from '../../database/repositories/bot-repository.js';
 import { validateSkill } from '../../skill-engine/skill-validator.js';
+import { query } from '../../database/pool.js';
 import type { SkillCreateInput } from '../../common/types/skill.js';
 
 /**
@@ -43,10 +44,19 @@ export async function skillRoutes(app: FastifyInstance): Promise<void> {
   // Create a skill (validates first)
   app.post<{
     Params: { botId: string };
-    Body: SkillCreateInput & { userTier?: string };
+    Body: SkillCreateInput;
   }>('/api/bots/:botId/skills', async (request, reply) => {
-    const existingSkills = await skillRepo.getActiveSkillsByBotId(request.params.botId);
-    const userTier = request.body.userTier ?? 'free';
+    const [existingSkills, bot] = await Promise.all([
+      skillRepo.getActiveSkillsByBotId(request.params.botId),
+      botRepo.getBotById(request.params.botId),
+    ]);
+
+    // Read tier from DB — never trust the client for authorization decisions
+    const tierResult = await query<{ tier: string }>(
+      'SELECT tier FROM users WHERE user_id = $1',
+      [bot.userId as string],
+    );
+    const userTier = tierResult.rows[0]?.tier ?? 'free';
 
     const result = await skillCreator.createSkill(request.body, existingSkills, userTier);
 

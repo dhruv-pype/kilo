@@ -24,6 +24,8 @@ import { requestContext } from '../database/request-context.js';
 import * as skillRepo from '../database/repositories/skill-repository.js';
 import * as memoryRepo from '../database/repositories/memory-repository.js';
 import * as botRepo from '../database/repositories/bot-repository.js';
+import * as messageRepo from '../database/repositories/message-repository.js';
+import * as notificationRepo from '../database/repositories/notification-repository.js';
 import { applySoulPatches } from '../bot-runtime/soul-evolver/soul-evolver.js';
 import { invalidateBotCache } from '../cache/cache-service.js';
 
@@ -35,25 +37,45 @@ interface ScheduledJob {
   task: ScheduledTask;
 }
 
+interface NotificationJob {
+  notificationId: string;
+  botId: string;
+  userId: string;
+  sessionId: string;
+  message: string;
+  schedule: string;
+  task: ScheduledTask;
+}
+
 export class CronScheduler {
   private jobs: Map<string, ScheduledJob> = new Map();
+  private notificationJobs: Map<string, NotificationJob> = new Map();
 
   constructor(private readonly orchestrator: MessageOrchestrator) {}
 
   /**
-   * Load all scheduled skills from the database and register cron jobs.
+   * Load all scheduled skills and notification jobs from the database.
    * Called once on server startup, after the server is listening.
    */
   async initialize(): Promise<void> {
     try {
       const scheduledSkills = await skillRepo.getScheduledSkills();
       console.log(`[scheduler] Found ${scheduledSkills.length} scheduled skill(s)`);
-
       for (const skill of scheduledSkills) {
         this.registerJob(skill, skill.userId);
       }
     } catch (err) {
-      console.error('[scheduler] Failed to initialize:', (err as Error).message);
+      console.error('[scheduler] Failed to initialize skill jobs:', (err as Error).message);
+    }
+
+    try {
+      const notifications = await notificationRepo.getActiveNotifications();
+      console.log(`[scheduler] Found ${notifications.length} recurring notification(s)`);
+      for (const n of notifications) {
+        this.registerNotificationJob(n.notificationId, n.botId, n.userId, n.sessionId, n.message, n.schedule);
+      }
+    } catch (err) {
+      console.error('[scheduler] Failed to initialize notification jobs:', (err as Error).message);
     }
   }
 
@@ -88,6 +110,83 @@ export class CronScheduler {
     });
 
     console.log(`[scheduler] Registered: ${skill.name} [${skill.schedule}]`);
+  }
+
+  /**
+   * Register a recurring notification cron job.
+   * When fired, writes an assistant message to the user's session in the DB.
+   */
+  registerNotificationJob(
+    notificationId: string,
+    botId: string,
+    userId: string,
+    notifSessionId: string,
+    message: string,
+    schedule: string,
+  ): void {
+    // Remove existing job for this notification if re-registering
+    const existing = this.notificationJobs.get(notificationId);
+    if (existing) {
+      existing.task.stop();
+      this.notificationJobs.delete(notificationId);
+    }
+
+    if (!cron.validate(schedule)) {
+      console.warn(`[scheduler] Invalid cron for notification ${notificationId}: ${schedule}`);
+      return;
+    }
+
+    const task = cron.schedule(schedule, () => {
+      this.fireNotification(notificationId, botId, userId, notifSessionId, message).catch((err) => {
+        console.error(`[scheduler] Notification fire failed (${notificationId}):`, (err as Error).message);
+      });
+    });
+
+    this.notificationJobs.set(notificationId, {
+      notificationId,
+      botId,
+      userId,
+      sessionId: notifSessionId,
+      message,
+      schedule,
+      task,
+    });
+
+    console.log(`[scheduler] Registered notification [${schedule}]: "${message.slice(0, 50)}"`);
+  }
+
+  private async fireNotification(
+    notificationId: string,
+    botId: string,
+    userId: string,
+    notifSessionId: string,
+    message: string,
+  ): Promise<void> {
+    try {
+      requestContext.enterWith({ userId });
+      console.log(`\n🔔 NOTIFICATION [bot: ${botId}]: ${message}\n`);
+      await messageRepo.insertMessage({
+        sessionId: notifSessionId,
+        botId,
+        role: 'assistant',
+        content: `🔔 **Reminder**: ${message}`,
+      });
+      await notificationRepo.markNotificationFired(notificationId);
+    } catch (err) {
+      console.error('[scheduler] Could not persist notification:', (err as Error).message);
+    }
+  }
+
+  /**
+   * Cancel a recurring notification job by ID.
+   */
+  cancelNotificationJob(notificationId: string): void {
+    const existing = this.notificationJobs.get(notificationId);
+    if (existing) {
+      existing.task.stop();
+      this.notificationJobs.delete(notificationId);
+      console.log(`[scheduler] Cancelled notification job: ${notificationId}`);
+    }
   }
 
   /**
@@ -164,8 +263,12 @@ export class CronScheduler {
     for (const [, job] of this.jobs) {
       job.task.stop();
     }
-    const count = this.jobs.size;
+    for (const [, job] of this.notificationJobs) {
+      job.task.stop();
+    }
+    const count = this.jobs.size + this.notificationJobs.size;
     this.jobs.clear();
+    this.notificationJobs.clear();
     console.log(`[scheduler] Stopped ${count} job(s)`);
   }
 
@@ -173,6 +276,6 @@ export class CronScheduler {
    * Get current job count (for health checks / diagnostics).
    */
   get jobCount(): number {
-    return this.jobs.size;
+    return this.jobs.size + this.notificationJobs.size;
   }
 }
