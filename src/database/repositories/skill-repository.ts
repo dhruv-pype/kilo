@@ -14,9 +14,10 @@ export async function createSkill(input: SkillCreateInput & {
   const result = await query<SkillRow>(
     `INSERT INTO skills (
       skill_id, bot_id, name, description, trigger_patterns, behavior_prompt,
-      input_schema, output_format, schedule, data_table, readable_tables,
+      input_schema, output_format, schedule, needs_history, needs_memory,
+      data_table, reads_data, readable_tables,
       table_schema_ddl, required_integrations, created_by
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
     RETURNING *`,
     [
       id,
@@ -28,7 +29,10 @@ export async function createSkill(input: SkillCreateInput & {
       input.inputSchema ? JSON.stringify(input.inputSchema) : null,
       input.outputFormat,
       input.schedule,
+      input.needsHistory ?? true,
+      input.needsMemory ?? true,
       input.dataTable,
+      input.readsData ?? false,
       input.readableTables,
       input.tableSchema,
       input.requiredIntegrations ?? [],
@@ -65,8 +69,8 @@ export async function updateSkill(
   id: string,
   updates: Partial<Pick<SkillDefinition,
     'name' | 'description' | 'triggerPatterns' | 'behaviorPrompt' |
-    'inputSchema' | 'outputFormat' | 'schedule' | 'readableTables' |
-    'performanceScore' | 'isActive'
+    'inputSchema' | 'outputFormat' | 'schedule' | 'needsHistory' | 'needsMemory' |
+    'readsData' | 'readableTables' | 'performanceScore' | 'isActive'
   >>,
 ): Promise<SkillDefinition> {
   const fieldMap: Record<string, string> = {
@@ -77,6 +81,9 @@ export async function updateSkill(
     inputSchema: 'input_schema',
     outputFormat: 'output_format',
     schedule: 'schedule',
+    needsHistory: 'needs_history',
+    needsMemory: 'needs_memory',
+    readsData: 'reads_data',
     readableTables: 'readable_tables',
     performanceScore: 'performance_score',
     isActive: 'is_active',
@@ -131,6 +138,28 @@ export async function countSkillsByBotId(botIdValue: string): Promise<number> {
   return parseInt(result.rows[0].count, 10);
 }
 
+/**
+ * Get all active skills that have a cron schedule, along with their owning userId.
+ * Used by the scheduler on startup to register cron jobs.
+ * Runs without RLS context (table owner query — system level).
+ */
+export async function getScheduledSkills(): Promise<(SkillDefinition & { userId: string })[]> {
+  const result = await query<SkillRow & { user_id: string }>(
+    `SELECT s.*, b.user_id
+     FROM skills s
+     JOIN bots b ON s.bot_id = b.bot_id
+     WHERE s.schedule IS NOT NULL
+       AND s.is_active = true
+       AND b.is_active = true
+     ORDER BY s.created_at`,
+  );
+
+  return result.rows.map(row => ({
+    ...mapSkillRow(row),
+    userId: row.user_id,
+  }));
+}
+
 // ─── Internal ──────────────────────────────────────────────────
 
 interface SkillRow {
@@ -143,7 +172,10 @@ interface SkillRow {
   input_schema: Record<string, unknown> | null;
   output_format: string;
   schedule: string | null;
+  needs_history: boolean;
+  needs_memory: boolean;
   data_table: string | null;
+  reads_data: boolean;
   readable_tables: string[];
   table_schema_ddl: string | null;
   required_integrations: string[];
@@ -166,7 +198,10 @@ function mapSkillRow(row: SkillRow): SkillDefinition {
     inputSchema: row.input_schema,
     outputFormat: row.output_format as SkillDefinition['outputFormat'],
     schedule: row.schedule,
+    needsHistory: row.needs_history,
+    needsMemory: row.needs_memory,
     dataTable: row.data_table,
+    readsData: row.reads_data,
     readableTables: row.readable_tables,
     tableSchema: row.table_schema_ddl,
     requiredIntegrations: row.required_integrations,

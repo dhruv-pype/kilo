@@ -10,6 +10,8 @@ import * as usageRepo from '../../database/repositories/usage-repository.js';
  *
  * Both support date filtering so the iOS app can show
  * "This month: $12.34" or "Last 7 days: $3.21".
+ *
+ * userId is extracted from the JWT (request.userId), not query params.
  */
 export async function usageRoutes(app: FastifyInstance): Promise<void> {
 
@@ -17,15 +19,14 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
 
   app.get<{
     Querystring: {
-      userId: string;
       startDate?: string;
       endDate?: string;
     };
   }>('/api/usage/summary', async (request) => {
-    const { userId, startDate, endDate } = request.query;
+    const { startDate, endDate } = request.query;
 
     const summary = await usageRepo.getTotalSpend(
-      userId,
+      request.userId as string,
       startDate ? new Date(startDate) : undefined,
       endDate ? new Date(endDate) : undefined,
     );
@@ -37,7 +38,6 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
 
   app.get<{
     Querystring: {
-      userId: string;
       groupBy: 'model' | 'bot' | 'day' | 'month';
       botId?: string;
       model?: string;
@@ -48,7 +48,7 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
     const q = request.query;
 
     const breakdown = await usageRepo.getSpendBreakdown({
-      userId: q.userId,
+      userId: request.userId as string,
       groupBy: q.groupBy,
       botId: q.botId,
       model: q.model,

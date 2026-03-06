@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import * as botRepo from '../../database/repositories/bot-repository.js';
 import type { BotCreateInput } from '../../common/types/bot.js';
-import type { UserId } from '../../common/types/ids.js';
 
 /**
  * Bot management routes.
@@ -9,12 +8,9 @@ import type { UserId } from '../../common/types/ids.js';
  */
 export async function botRoutes(app: FastifyInstance): Promise<void> {
 
-  // List user's bots
-  app.get<{
-    Querystring: { userId: string };
-  }>('/api/bots', async (request) => {
-    const { userId } = request.query;
-    const bots = await botRepo.getBotsByUserId(userId);
+  // List user's bots (userId from JWT, not query params)
+  app.get('/api/bots', async (request) => {
+    const bots = await botRepo.getBotsByUserId(request.userId as string);
     return { bots };
   });
 
@@ -26,11 +22,14 @@ export async function botRoutes(app: FastifyInstance): Promise<void> {
     return { bot };
   });
 
-  // Create a new bot
+  // Create a new bot (userId from JWT, overrides any body value)
   app.post<{
-    Body: BotCreateInput;
+    Body: Omit<BotCreateInput, 'userId'>;
   }>('/api/bots', async (request, reply) => {
-    const bot = await botRepo.createBot(request.body);
+    const bot = await botRepo.createBot({
+      ...request.body,
+      userId: request.userId,
+    });
     reply.code(201);
     return { bot };
   });

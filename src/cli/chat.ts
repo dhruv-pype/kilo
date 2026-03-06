@@ -13,9 +13,13 @@ import { LLMGateway, defaultModelRoutes } from '../llm-gateway/llm-gateway.js';
 import { TrackedLLMGateway } from '../llm-gateway/tracked-llm-gateway.js';
 import { AnthropicProvider } from '../llm-gateway/providers/anthropic.js';
 import { OpenAIProvider } from '../llm-gateway/providers/openai.js';
-import { getCachedBotConfig, setCachedBotConfig, getCachedSkills, setCachedSkills } from '../cache/cache-service.js';
+import { getCachedBotConfig, setCachedBotConfig, getCachedSkills, setCachedSkills, invalidateBotCache } from '../cache/cache-service.js';
 import * as skillRepo from '../database/repositories/skill-repository.js';
 import * as toolRepo from '../database/repositories/tool-registry-repository.js';
+import * as memoryRepo from '../database/repositories/memory-repository.js';
+import * as skillDataRepo from '../database/repositories/skill-data-repository.js';
+import * as refinementRepo from '../database/repositories/skill-refinement-repository.js';
+import { applySoulPatches } from '../bot-runtime/soul-evolver/soul-evolver.js';
 import { messageId, sessionId, userId } from '../common/types/ids.js';
 import type { BotId, UserId } from '../common/types/ids.js';
 import type { BotConfig } from '../common/types/bot.js';
@@ -161,6 +165,11 @@ class InstrumentedOrchestrator {
             think('memory extracted', `${fact.key} = "${fact.value}" (${Math.round(fact.confidence * 100)}%)`);
           }
           break;
+        case 'soul_update':
+          for (const patch of effect.patches) {
+            think('soul evolved', `${patch.operation} ${patch.path} = "${patch.value}"`);
+          }
+          break;
         case 'skill_proposal':
           think('skill proposed', `"${effect.proposal.proposedName}" (${Math.round(effect.proposal.confidence * 100)}% confidence)`);
           break;
@@ -182,6 +191,24 @@ class InstrumentedOrchestrator {
             step('  📄', url);
           }
           break;
+      }
+    }
+
+    // ── Persist side effects (non-blocking, don't fail the response) ──
+    for (const effect of result.sideEffects) {
+      try {
+        if (effect.type === 'memory_write') {
+          await memoryRepo.upsertFacts(botIdVal, effect.facts);
+        } else if (effect.type === 'soul_update') {
+          const currentBot = await botRepo.getBotById(effect.botId);
+          if (currentBot.soul) {
+            const updatedSoul = applySoulPatches(currentBot.soul, effect.patches);
+            await botRepo.updateBot(effect.botId, { soul: updatedSoul });
+            await invalidateBotCache(effect.botId);
+          }
+        }
+      } catch (err) {
+        think('side-effect error', (err as Error).message);
       }
     }
 
@@ -277,13 +304,39 @@ async function main() {
     async loadConversationHistory(id, sid, depth) {
       return messageRepo.getRecentMessages(id, sid, depth);
     },
-    async loadMemoryFacts() { return []; },
+    async loadMemoryFacts(botId: string, keyQuery: string | null) {
+      return memoryRepo.getFactsByBotId(botId, keyQuery);
+    },
     async loadRAGResults() { return []; },
     async loadSkillData() { return { tableName: '', rows: [], totalCount: 0 }; },
     async loadTableSchemas() { return []; },
     async loadRecentDismissals() { return []; },
+    async loadProposal() { return null; },
+    async createSkill() {},
+    async acceptProposal() {},
+    async dismissProposal() {},
     async loadTools(botIdVal: string, names: string[]) {
       return toolRepo.getToolsByNames(botIdVal, names);
+    },
+    async querySkillData(schemaName: string, sql: string) {
+      return skillDataRepo.executeSelectQuery(schemaName, sql);
+    },
+    async updateSkill(skillId, updates) {
+      const skill = await skillRepo.getSkillById(skillId);
+      await skillRepo.updateSkill(skillId, updates);
+      await invalidateBotCache(skill.botId as string);
+    },
+    async saveRefinement(skillId, botId, result) {
+      return refinementRepo.saveRefinement(skillId, botId, result);
+    },
+    async loadRefinement(refinementId) {
+      return refinementRepo.getRefinement(refinementId);
+    },
+    async applyRefinement(refinementId) {
+      await refinementRepo.updateRefinementStatus(refinementId, 'applied');
+    },
+    async dismissRefinement(refinementId) {
+      await refinementRepo.updateRefinementStatus(refinementId, 'dismissed');
     },
   };
 

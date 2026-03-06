@@ -142,6 +142,10 @@ function generateDDL(
   columnDefs.push(`id UUID PRIMARY KEY DEFAULT gen_random_uuid()`);
   columns.push({ name: 'id', type: 'uuid', nullable: false });
 
+  // When did this event occur? Defaults to now but user can override for retroactive logging.
+  columnDefs.push(`logged_at TIMESTAMPTZ NOT NULL DEFAULT now()`);
+  columns.push({ name: 'logged_at', type: 'timestamptz', nullable: false });
+
   // User-defined columns from inputSchema
   for (const [propName, propSchema] of Object.entries(properties)) {
     const safeName = sanitizeIdentifier(propName);
@@ -157,18 +161,21 @@ function generateDDL(
   // Audit columns
   columnDefs.push(`created_at TIMESTAMPTZ NOT NULL DEFAULT now()`);
   columnDefs.push(`updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`);
-  columnDefs.push(`skill_id UUID NOT NULL DEFAULT '${skillId}'::uuid`);
+  columnDefs.push(`skill_id UUID`);
   columns.push({ name: 'created_at', type: 'timestamptz', nullable: false });
   columns.push({ name: 'updated_at', type: 'timestamptz', nullable: false });
-  columns.push({ name: 'skill_id', type: 'uuid', nullable: false });
+  columns.push({ name: 'skill_id', type: 'uuid', nullable: true });
 
   const fullName = `${schemaName}.${tableName}`;
   let ddl = `CREATE TABLE ${fullName} (\n  ${columnDefs.join(',\n  ')}\n);\n`;
 
   // Auto-generate indexes (Spec #1):
+  // - logged_at always gets an index (primary time-range filter for every skill query)
   // - All date/datetime columns get a B-tree index
   // - All required columns get a B-tree index
-  const indexStatements: string[] = [];
+  const indexStatements: string[] = [
+    `CREATE INDEX idx_${tableName}_logged_at ON ${fullName}(logged_at);`,
+  ];
   for (const [propName, propSchema] of Object.entries(properties)) {
     const safeName = sanitizeIdentifier(propName);
     const format = propSchema.format as string | undefined;

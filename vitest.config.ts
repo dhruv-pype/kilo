@@ -22,6 +22,7 @@ export default defineConfig({
       '@database': path.resolve(__dirname, 'src/database'),
       '@cache': path.resolve(__dirname, 'src/cache'),
       '@api': path.resolve(__dirname, 'src/api'),
+      '@scheduler': path.resolve(__dirname, 'src/scheduler'),
     },
   },
 });

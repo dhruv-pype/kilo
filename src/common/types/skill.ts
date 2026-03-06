@@ -23,8 +23,11 @@ export interface SkillDefinition {
   behaviorPrompt: string;
   inputSchema: Record<string, unknown> | null; // JSON Schema draft-07
   outputFormat: OutputFormat;
-  schedule: string | null;                      // cron expression
+  schedule: string | null;                      // cron expression — when to run
+  needsHistory: boolean;                        // load recent conversation into prompt
+  needsMemory: boolean;                         // load user memory facts into prompt
   dataTable: string | null;                     // Postgres table name in bot's schema
+  readsData: boolean;                           // pre-load data snapshot into prompt
   readableTables: string[];                     // tables this skill can SELECT from
   tableSchema: string | null;                   // generated DDL for reference
   requiredIntegrations: string[];
@@ -45,6 +48,9 @@ export interface SkillCreateInput {
   inputSchema: Record<string, unknown> | null;
   outputFormat: OutputFormat;
   schedule: string | null;
+  needsHistory: boolean;
+  needsMemory: boolean;
+  readsData: boolean;
   readableTables: string[];
   requiredIntegrations: string[];
   createdBy: SkillCreatedBy;

@@ -172,5 +172,27 @@ export function defaultModelRoutes(): ModelRoute[] {
       thinking: { type: 'enabled', budgetTokens: 8_000 },
       maxTokens: 12_288,
     },
+    // ─── Cheap LLM tasks (gpt-4.1-mini primary) ──────────────
+    {
+      taskType: 'memory_extraction',
+      primary: { provider: 'openai', model: 'gpt-4.1-mini' },
+      fallback: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+      // No thinking — structured extraction, keep fast
+      maxTokens: 1_024,
+    },
+    {
+      taskType: 'soul_extraction',
+      primary: { provider: 'openai', model: 'gpt-4.1-mini' },
+      fallback: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+      // No thinking — conservative patch detection
+      maxTokens: 1_024,
+    },
+    {
+      taskType: 'intent_classification',
+      primary: { provider: 'openai', model: 'gpt-4.1-mini' },
+      fallback: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+      // No thinking — fast intent matching
+      maxTokens: 512,
+    },
   ];
 }

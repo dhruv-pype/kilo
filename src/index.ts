@@ -21,6 +21,15 @@ async function main() {
     console.warn('[startup] KILO_CREDENTIAL_KEY is invalid: expected a 64-character hex string.');
   }
 
+  // JWT auth — required for multi-user API security
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret) {
+    throw new Error('JWT_SECRET must be set. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(64).toString(\'hex\'))"');
+  }
+  if (process.env.NODE_ENV === 'production' && jwtSecret === 'change-me-in-production') {
+    throw new Error('JWT_SECRET must be changed from the default value in production.');
+  }
+
   const parsedPort = parseInt(process.env.PORT ?? '3000', 10);
   if (Number.isNaN(parsedPort) || parsedPort <= 0) {
     throw new Error('Invalid PORT. Provide a positive integer value.');
@@ -33,12 +42,28 @@ async function main() {
     redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
     openaiApiKey: process.env.OPENAI_API_KEY ?? '',
+    jwtSecret,
   };
 
-  const server = await createServer(config);
+  const { app, scheduler } = await createServer(config);
 
-  await server.listen({ port: config.port, host: config.host });
+  await app.listen({ port: config.port, host: config.host });
   console.log(`Kilo server running on ${config.host}:${config.port}`);
+
+  // Initialize scheduler after server is ready
+  await scheduler.initialize();
+
+  // Graceful shutdown
+  const shutdown = async () => {
+    console.log('[shutdown] Stopping scheduler...');
+    scheduler.stopAll();
+    console.log('[shutdown] Closing server...');
+    await app.close();
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 main().catch((err) => {

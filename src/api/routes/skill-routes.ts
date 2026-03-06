@@ -1,12 +1,16 @@
 import type { FastifyInstance } from 'fastify';
 import * as skillRepo from '../../database/repositories/skill-repository.js';
 import * as skillCreator from '../../skill-engine/skill-creator.js';
+import * as botRepo from '../../database/repositories/bot-repository.js';
 import { validateSkill } from '../../skill-engine/skill-validator.js';
 import type { SkillCreateInput } from '../../common/types/skill.js';
 
 /**
  * Skill management routes.
  * CRUD + validation for bot skills.
+ *
+ * When skills with a cron schedule are created/updated/deleted,
+ * the scheduler is notified to register/remove cron jobs.
  */
 export async function skillRoutes(app: FastifyInstance): Promise<void> {
 
@@ -45,6 +49,12 @@ export async function skillRoutes(app: FastifyInstance): Promise<void> {
     const userTier = request.body.userTier ?? 'free';
 
     const result = await skillCreator.createSkill(request.body, existingSkills, userTier);
+
+    // Register cron job if the skill has a schedule
+    if (result.skill.schedule) {
+      app.scheduler.registerJob(result.skill, request.userId as string);
+    }
+
     reply.code(201);
     return { skill: result.skill, tableCreated: result.tableCreated };
   });
@@ -61,6 +71,15 @@ export async function skillRoutes(app: FastifyInstance): Promise<void> {
     };
   }>('/api/skills/:skillId', async (request) => {
     const skill = await skillRepo.updateSkill(request.params.skillId, request.body);
+
+    // Re-register or remove the cron job based on updated schedule
+    if (skill.schedule) {
+      const bot = await botRepo.getBotById(skill.botId as string);
+      app.scheduler.registerJob(skill, bot.userId as string);
+    } else {
+      app.scheduler.removeJob(request.params.skillId);
+    }
+
     return { skill };
   });
 
@@ -68,6 +87,9 @@ export async function skillRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{
     Params: { botId: string; skillId: string };
   }>('/api/bots/:botId/skills/:skillId', async (request, reply) => {
+    // Remove cron job before deleting the skill
+    app.scheduler.removeJob(request.params.skillId);
+
     await skillCreator.deleteSkill(request.params.skillId, request.params.botId);
     reply.code(204);
   });

@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { evaluateForProposal } from '@bot-runtime/skill-proposer/skill-proposer.js';
 import type { UserMessage } from '@common/types/message.js';
 import type { BotId, MessageId, SessionId, UserId } from '@common/types/ids.js';
+import type { LLMGatewayPort } from '@bot-runtime/orchestrator/message-orchestrator.js';
+import type { SkillProposal } from '@common/types/orchestrator.js';
 
 function makeMessage(content: string): UserMessage {
   return {
@@ -17,77 +19,110 @@ function makeMessage(content: string): UserMessage {
 
 const noContext = { recentDismissals: [] };
 
-describe('evaluateForProposal', () => {
-  // ─── Should Propose ──────────────────────────────────────────
+// ─── LLM mock helpers ─────────────────────────────────────────
 
-  it('proposes a tracker for "keep track of my orders"', () => {
-    const result = evaluateForProposal(makeMessage('I want to keep track of my orders'), [], noContext);
+function makeLLM(proposal: Partial<SkillProposal> | null): LLMGatewayPort {
+  return {
+    complete: vi.fn().mockResolvedValue({
+      content: '',
+      toolCalls: proposal
+        ? [{
+            toolName: 'propose_skill',
+            arguments: {
+              proposedName: proposal.proposedName ?? 'Test Skill',
+              description: proposal.description ?? 'A test skill',
+              triggerExamples: proposal.triggerExamples ?? ['test'],
+              suggestedInputFields: proposal.suggestedInputFields ?? [],
+              suggestedSchedule: proposal.suggestedSchedule ?? null,
+              clarifyingQuestions: proposal.clarifyingQuestions ?? ['What should I track?'],
+              confidence: proposal.confidence ?? 0.8,
+              dataModel: proposal.dataModel ?? 'per_entry',
+            },
+          }]
+        : [{ toolName: 'no_proposal', arguments: { reason: 'one-off question' } }],
+    }),
+  };
+}
+
+describe('evaluateForProposal', () => {
+  // ─── Should Propose ─────────────────────────────────────────
+
+  it('proposes a tracker when LLM returns propose_skill', async () => {
+    const llm = makeLLM({ proposedName: 'Orders Tracker', confidence: 0.8 });
+    const result = await evaluateForProposal(makeMessage('I want to keep track of my orders'), [], noContext, llm);
     expect(result).not.toBeNull();
     expect(result!.proposedName).toContain('Orders');
   });
 
-  it('proposes a reminder for "remind me to call supplier"', () => {
-    const result = evaluateForProposal(makeMessage('Remind me to call the flour supplier at 3pm'), [], noContext);
+  it('proposes a reminder when LLM returns propose_skill', async () => {
+    const llm = makeLLM({ proposedName: 'Call Supplier Reminder', suggestedSchedule: '0 15 * * *' });
+    const result = await evaluateForProposal(makeMessage('Remind me to call the flour supplier at 3pm'), [], noContext, llm);
     expect(result).not.toBeNull();
     expect(result!.proposedName).toContain('Reminder');
   });
 
-  it('proposes for "every morning send me a summary"', () => {
-    const result = evaluateForProposal(
+  it('returns a schedule from the LLM proposal', async () => {
+    const llm = makeLLM({ proposedName: 'Morning Summary', suggestedSchedule: '30 6 * * *' });
+    const result = await evaluateForProposal(
       makeMessage('Every morning send me a summary of today'),
       [],
       noContext,
+      llm,
+    );
+    expect(result).not.toBeNull();
+    expect(result!.suggestedSchedule).toBe('30 6 * * *');
+  });
+
+  it('returns 8AM schedule from LLM for "Give me all the AI news at 8AM everyday"', async () => {
+    const llm = makeLLM({ proposedName: 'Daily AI News', suggestedSchedule: '0 8 * * *', confidence: 0.9 });
+    const result = await evaluateForProposal(
+      makeMessage('Give me all the AI news for the day at 8AM everyday'),
+      [],
+      noContext,
+      llm,
     );
     expect(result).not.toBeNull();
     expect(result!.suggestedSchedule).not.toBeNull();
-  });
-
-  it('proposes a log for "log my daily expenses"', () => {
-    const result = evaluateForProposal(makeMessage('I want to log my daily expenses'), [], noContext);
-    expect(result).not.toBeNull();
-    expect(result!.proposedName).toContain('Expenses');
-  });
-
-  it('proposes for "record my workouts"', () => {
-    const result = evaluateForProposal(makeMessage('Record my workouts every day'), [], noContext);
-    expect(result).not.toBeNull();
+    expect(result!.suggestedSchedule).toContain('8');
   });
 
   // ─── Should NOT Propose ──────────────────────────────────────
 
-  it('does NOT propose for a one-off question', () => {
-    const result = evaluateForProposal(makeMessage('What time is it?'), [], noContext);
+  it('returns null when LLM returns no_proposal', async () => {
+    const llm = makeLLM(null);
+    const result = await evaluateForProposal(makeMessage('What time is it?'), [], noContext, llm);
     expect(result).toBeNull();
   });
 
-  it('does NOT propose for general chat', () => {
-    const result = evaluateForProposal(makeMessage('Hello, how are you today?'), [], noContext);
-    expect(result).toBeNull();
-  });
-
-  it('does NOT propose for factual questions', () => {
-    const result = evaluateForProposal(makeMessage('What is the capital of France?'), [], noContext);
+  it('returns null when toolCalls is empty', async () => {
+    const llm: LLMGatewayPort = {
+      complete: vi.fn().mockResolvedValue({ content: '', toolCalls: [] }),
+    };
+    const result = await evaluateForProposal(makeMessage('Hello'), [], noContext, llm);
     expect(result).toBeNull();
   });
 
   // ─── Dismissal Cooldown ──────────────────────────────────────
 
-  it('does NOT re-propose a recently dismissed skill', () => {
-    const result = evaluateForProposal(
+  it('does NOT re-propose a recently dismissed skill', async () => {
+    const llm = makeLLM({ proposedName: 'Orders Tracker' });
+    const result = await evaluateForProposal(
       makeMessage('Keep track of my orders'),
       [],
       {
         recentDismissals: [
-          { proposedName: 'Orders Tracker', dismissedAt: new Date() }, // just now
+          { proposedName: 'Orders Tracker', dismissedAt: new Date() },
         ],
       },
+      llm,
     );
     expect(result).toBeNull();
   });
 
-  it('DOES re-propose after the 7-day cooldown', () => {
+  it('DOES re-propose after the 7-day cooldown', async () => {
     const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
-    const result = evaluateForProposal(
+    const llm = makeLLM({ proposedName: 'Orders Tracker' });
+    const result = await evaluateForProposal(
       makeMessage('Keep track of my orders'),
       [],
       {
@@ -95,39 +130,32 @@ describe('evaluateForProposal', () => {
           { proposedName: 'Orders Tracker', dismissedAt: eightDaysAgo },
         ],
       },
+      llm,
     );
     expect(result).not.toBeNull();
   });
 
-  // ─── Proposal Quality ───────────────────────────────────────
+  // ─── Proposal Quality ────────────────────────────────────────
 
-  it('includes clarifying questions', () => {
-    const result = evaluateForProposal(makeMessage('Track my expenses'), [], noContext);
+  it('includes clarifying questions from LLM', async () => {
+    const llm = makeLLM({ clarifyingQuestions: ['What details should I capture per expense?'] });
+    const result = await evaluateForProposal(makeMessage('Track my expenses'), [], noContext, llm);
     expect(result).not.toBeNull();
     expect(result!.clarifyingQuestions.length).toBeGreaterThan(0);
   });
 
-  it('includes trigger examples', () => {
-    const result = evaluateForProposal(makeMessage('Track my orders'), [], noContext);
+  it('includes trigger examples from LLM', async () => {
+    const llm = makeLLM({ triggerExamples: ['new order', 'add order', 'show my orders'] });
+    const result = await evaluateForProposal(makeMessage('Track my orders'), [], noContext, llm);
     expect(result).not.toBeNull();
     expect(result!.triggerExamples.length).toBeGreaterThan(0);
   });
 
-  it('has confidence between 0 and 1', () => {
-    const result = evaluateForProposal(makeMessage('Remind me every day to take vitamins'), [], noContext);
+  it('clamps confidence to [0, 1]', async () => {
+    const llm = makeLLM({ confidence: 1.5 }); // over max
+    const result = await evaluateForProposal(makeMessage('Track my workouts'), [], noContext, llm);
     expect(result).not.toBeNull();
-    expect(result!.confidence).toBeGreaterThan(0);
     expect(result!.confidence).toBeLessThanOrEqual(1);
-  });
-
-  it('generates a schedule for time-based requests', () => {
-    const result = evaluateForProposal(
-      makeMessage('Remind me at 3pm to check the oven'),
-      [],
-      noContext,
-    );
-    expect(result).not.toBeNull();
-    expect(result!.suggestedSchedule).not.toBeNull();
-    expect(result!.suggestedSchedule).toContain('15'); // 3pm = hour 15
+    expect(result!.confidence).toBeGreaterThan(0);
   });
 });
