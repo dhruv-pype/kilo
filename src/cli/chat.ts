@@ -19,6 +19,8 @@ import * as toolRepo from '../database/repositories/tool-registry-repository.js'
 import * as memoryRepo from '../database/repositories/memory-repository.js';
 import * as skillDataRepo from '../database/repositories/skill-data-repository.js';
 import * as refinementRepo from '../database/repositories/skill-refinement-repository.js';
+import * as proposalRepo from '../database/repositories/skill-proposal-repository.js';
+import * as skillCreator from '../skill-engine/skill-creator.js';
 import { applySoulPatches } from '../bot-runtime/soul-evolver/soul-evolver.js';
 import { messageId, sessionId, userId } from '../common/types/ids.js';
 import type { BotId, UserId } from '../common/types/ids.js';
@@ -206,6 +208,27 @@ class InstrumentedOrchestrator {
             await botRepo.updateBot(effect.botId, { soul: updatedSoul });
             await invalidateBotCache(effect.botId);
           }
+        } else if (effect.type === 'skill_proposal') {
+          await proposalRepo.insertProposal(botIdVal, effect.proposalId, effect.proposal);
+        } else if (effect.type === 'skill_refinement') {
+          await refinementRepo.saveRefinement(effect.skillId, effect.botId, effect.result);
+        } else if (effect.type === 'skill_data_write') {
+          const bot = await botRepo.getBotById(botIdVal);
+          if (effect.operation === 'insert') {
+            await skillDataRepo.insertRow(bot.schemaName, effect.table, effect.data);
+          } else if (effect.operation === 'update') {
+            const { id, ...fields } = effect.data as { id: string } & Record<string, unknown>;
+            await skillDataRepo.updateRow(bot.schemaName, effect.table, id, fields);
+          }
+        } else if (effect.type === 'schedule_notification') {
+          const delayMs = effect.at.getTime() - Date.now();
+          if (!effect.recurring && delayMs > 0 && delayMs < 24 * 60 * 60 * 1000) {
+            setTimeout(() => {
+              console.log(`\n  ${YELLOW}${BOLD}🔔 Reminder:${RESET} ${effect.message}\n`);
+            }, delayMs);
+          } else if (effect.recurring) {
+            think('notification skipped', `recurring cron not supported in CLI — use the API server`);
+          }
         }
       } catch (err) {
         think('side-effect error', (err as Error).message);
@@ -319,13 +342,38 @@ async function main() {
         return [];
       }
     },
-    async loadSkillData() { return { tableName: '', rows: [], totalCount: 0 }; },
-    async loadTableSchemas() { return []; },
-    async loadRecentDismissals() { return []; },
-    async loadProposal() { return null; },
-    async createSkill() {},
-    async acceptProposal() {},
-    async dismissProposal() {},
+    async loadSkillData(botId: string, tableName: string, dataQuery: string | null) {
+      const bot = await botRepo.getBotById(botId);
+      return skillDataRepo.loadSkillData(bot.schemaName, tableName, dataQuery);
+    },
+    async loadTableSchemas(botId: string, tableNames: string[]) {
+      const bot = await botRepo.getBotById(botId);
+      return skillDataRepo.loadTableSchemas(bot.schemaName, tableNames);
+    },
+    async loadRecentDismissals(botId: string) {
+      return proposalRepo.getRecentDismissals(botId);
+    },
+    async loadProposal(proposalId: string) {
+      return proposalRepo.getProposal(proposalId);
+    },
+    async createSkill(botId: string, input) {
+      const [existingSkills, bot] = await Promise.all([
+        skillRepo.getActiveSkillsByBotId(botId),
+        botRepo.getBotById(botId),
+      ]);
+      const tierResult = await dbQuery<{ tier: string }>(
+        'SELECT tier FROM users WHERE user_id = $1',
+        [bot.userId as string],
+      );
+      const tier = tierResult.rows[0]?.tier ?? 'free';
+      await skillCreator.createSkill(input, existingSkills, tier);
+    },
+    async acceptProposal(proposalId: string) {
+      await proposalRepo.updateProposalStatus(proposalId, 'accepted');
+    },
+    async dismissProposal(proposalId: string) {
+      await proposalRepo.updateProposalStatus(proposalId, 'dismissed');
+    },
     async loadTools(botIdVal: string, names: string[]) {
       return toolRepo.getToolsByNames(botIdVal, names);
     },
