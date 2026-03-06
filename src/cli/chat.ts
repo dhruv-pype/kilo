@@ -367,6 +367,7 @@ async function main() {
       );
       const tier = tierResult.rows[0]?.tier ?? 'free';
       await skillCreator.createSkill(input, existingSkills, tier);
+      await invalidateBotCache(botId);
     },
     async acceptProposal(proposalId: string) {
       await proposalRepo.updateProposalStatus(proposalId, 'accepted');

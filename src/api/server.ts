@@ -163,6 +163,7 @@ export async function createServer(config: ServerConfig) {
       );
       const tier = tierResult.rows[0]?.tier ?? 'free';
       const result = await skillCreator.createSkill(input, existingSkills, tier);
+      await invalidateBotCache(botId);
       if (result.skill.schedule) {
         app.scheduler.registerJob(result.skill, bot.userId as string);
       }
