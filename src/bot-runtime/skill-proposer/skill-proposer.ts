@@ -64,11 +64,13 @@ Only include schedule if the message specifies timing. Otherwise leave null.
 - Bad: "Call Supplier At 3pm Reminder" → Good: "Call Supplier Reminder"
 
 ## Data model — choose the right one:
+- **notification**: Pure reminder/alert skill. No data table. The skill calls schedule_notification with a computed future time. Use for any "remind me to...", "alert me when...", "notify me at..." pattern. Always set suggestedInputFields to [].
 - **per_entry**: Each action creates a new row (workouts, sales, expenses, meals, notes). Use when users will log multiple items per day and each one matters individually.
 - **daily_total**: One row per day, updated in-place ("1000 more steps" adds to today's row). Use when the user tracks a running daily aggregate (steps, water intake, screen time).
 - **singleton**: A single row that gets overwritten each time (current mood, today's goal, active task). Use for "current state" skills with no history.
 
 ## Fields — IMPORTANT rules:
+- For **notification** model: always set suggestedInputFields to [] — no table, no fields.
 - Do NOT suggest date, time, datetime, or timestamp fields. Every skill table already has a \`logged_at\` column (TIMESTAMPTZ, defaults to now) that handles all time tracking automatically.
 - Only suggest fields for the actual domain data (amounts, names, counts, categories, notes, etc.).
 - Keep fields minimal — only what's needed to make the skill useful.`;
@@ -126,8 +128,8 @@ const TOOLS: ToolDefinition[] = [
         },
         dataModel: {
           type: 'string',
-          enum: ['per_entry', 'daily_total', 'singleton'],
-          description: 'How data is stored: per_entry=new row each time, daily_total=one row per day updated in-place, singleton=single overwritten row',
+          enum: ['notification', 'per_entry', 'daily_total', 'singleton'],
+          description: 'notification=no table, only schedule_notification (use for reminders/alerts); per_entry=new row each time; daily_total=one row per day updated in-place; singleton=single overwritten row',
         },
       },
       required: [
@@ -231,8 +233,8 @@ function parseLLMResponse(response: { content: string; toolCalls: { toolName: st
       confidence: typeof input.confidence === 'number'
         ? Math.max(0, Math.min(1, input.confidence))
         : 0.7,
-      dataModel: (['per_entry', 'daily_total', 'singleton'] as const).includes(input.dataModel as 'per_entry' | 'daily_total' | 'singleton')
-        ? (input.dataModel as 'per_entry' | 'daily_total' | 'singleton')
+      dataModel: (['notification', 'per_entry', 'daily_total', 'singleton'] as const).includes(input.dataModel as SkillProposal['dataModel'])
+        ? (input.dataModel as SkillProposal['dataModel'])
         : 'per_entry',
     };
   } catch {

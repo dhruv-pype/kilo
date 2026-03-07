@@ -288,6 +288,8 @@ function extractRefinementResult(response: LLMResponse): SkillRefinementResult {
 
 function describeDataModel(model: SkillProposal['dataModel']): string {
   switch (model) {
+    case 'notification':
+      return 'notification — NO data table. This skill ONLY calls schedule_notification. Extract the reminder message and compute the target time as an ISO 8601 string from the current date/time injected in the system prompt. Never call insert_skill_data or update_skill_data.';
     case 'daily_total':
       return 'daily_total — one row per day, updated in-place when user logs more. Use check-then-insert-or-update pattern. Never create duplicate rows for the same day.';
     case 'singleton':

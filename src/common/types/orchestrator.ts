@@ -132,7 +132,7 @@ export interface SkillProposal {
   suggestedSchedule: string | null;
   clarifyingQuestions: string[];
   confidence: number;
-  dataModel: 'per_entry' | 'daily_total' | 'singleton';
+  dataModel: 'per_entry' | 'daily_total' | 'singleton' | 'notification';
 }
 
 export interface FieldSuggestion {

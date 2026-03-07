@@ -842,7 +842,9 @@ export class MessageOrchestrator {
 }
 
 function proposalToSkillInput(botId: string, proposal: SkillProposal): SkillCreateInput {
-  const hasFields = proposal.suggestedInputFields.length > 0;
+  // notification skills have no data table — they only call schedule_notification
+  const isNotification = proposal.dataModel === 'notification';
+  const hasFields = !isNotification && proposal.suggestedInputFields.length > 0;
   return {
     botId: botId as BotId,
     name: proposal.proposedName,
@@ -853,9 +855,9 @@ function proposalToSkillInput(botId: string, proposal: SkillProposal): SkillCrea
     inputSchema: hasFields ? fieldsToJsonSchema(proposal.suggestedInputFields) : null,
     outputFormat: 'text',
     schedule: proposal.suggestedSchedule,
-    needsHistory: true,
+    needsHistory: false,
     needsMemory: false,
-    readsData: hasFields,
+    readsData: false,
     readableTables: [],
     requiredIntegrations: [],
     createdBy: 'auto_proposed',
@@ -915,6 +917,10 @@ function formatRefinementPreview(skillName: string, result: SkillRefinementResul
 
 function buildBehaviorPrompt(proposal: SkillProposal): string {
   const { description, suggestedInputFields, dataModel } = proposal;
+
+  if (dataModel === 'notification') {
+    return `## What this skill does\n${description}\n\n## How to handle a reminder request\n1. Extract what to remind the user about from their message.\n2. Compute the target time as an ISO 8601 string using the current date/time provided in the system prompt.\n3. Call schedule_notification with the message and computed ISO timestamp.\n4. Confirm: "Got it! I'll remind you [what] at [time]."\n\nNever call insert_skill_data. Never use SQL expressions as timestamps.`;
+  }
 
   if (suggestedInputFields.length === 0) {
     return `## What this skill does\n${description}\n\nBe helpful and concise. Never expose internal details to the user.`;
