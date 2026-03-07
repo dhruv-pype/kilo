@@ -103,7 +103,7 @@ describe('validateSchema', () => {
   });
 
   it('fails when behavior prompt exceeds max length', () => {
-    const result = validateSchema(validInput({ behaviorPrompt: 'A'.repeat(5001) }));
+    const result = validateSchema(validInput({ behaviorPrompt: 'A'.repeat(12001) }));
     expect(result.passed).toBe(false);
     expect(result.errors[0].field).toBe('behaviorPrompt');
     expect(result.errors[0].rule).toBe('max_length');

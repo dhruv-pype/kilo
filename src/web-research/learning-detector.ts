@@ -235,7 +235,7 @@ export function detectProposalFollowUp(
   if (negative.test(trimmed)) return { proposalId, accepted: false };
 
   // Affirmative patterns — user confirming
-  const affirmative = /^(yes|yeah|sure|ok|okay|create|go\s*ahead|do\s*it)\b/i;
+  const affirmative = /^(yes|yeah|yep|sure|ok|okay|create|go\s*ahead|do\s*it|learn|sounds?\s*good|let'?s\s*(do\s*it|go)|please|absolutely|definitely)\b/i;
   if (affirmative.test(trimmed)) return { proposalId, accepted: true };
 
   // Don't intercept unrelated replies
