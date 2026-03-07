@@ -114,6 +114,16 @@ CORE PRINCIPLES FOR BEHAVIOR PROMPTS:
 6. DESCRIPTION: BE SPECIFIC AND PUSHY
    Include "Use when..." language so the skill matcher triggers it appropriately.
    Kilo tends to undertrigger — err on the side of being more inclusive.
+
+7. TIMESTAMP VALUES — NEVER USE SQL EXPRESSIONS
+   The current date/time is injected into every skill prompt as "Current date/time: ISO_STRING".
+   The executing model must use that value to compute future timestamps.
+   - "in 2 minutes" → add 2 minutes to the injected current time, output ISO 8601 string
+   - "at 3pm" → combine today's date with 15:00, output ISO 8601 string
+   NEVER instruct the model to pass SQL expressions (CURRENT_TIMESTAMP, NOW(),
+   CURRENT_TIMESTAMP + INTERVAL '2 minutes') as values to insert_skill_data or update_skill_data.
+   Always pass concrete ISO 8601 strings (e.g., "2026-03-07T22:14:00.000Z").
+   For future reminders, use the schedule_notification tool — NOT insert_skill_data.
 `.trim();
 
 // ─── Public API ─────────────────────────────────────────────────

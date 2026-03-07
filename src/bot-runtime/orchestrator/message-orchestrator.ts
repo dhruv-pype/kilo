@@ -1014,11 +1014,7 @@ function formatSkillProposal(proposal: SkillProposal): ProcessedResponse {
     lines.push('');
   }
 
-  if (proposal.clarifyingQuestions.length > 0) {
-    lines.push(proposal.clarifyingQuestions[0]);
-  } else {
-    lines.push('Want me to set this up?');
-  }
+  lines.push('Want me to set this up?');
 
   return {
     content: lines.join('\n'),

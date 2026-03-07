@@ -29,6 +29,7 @@ export function composeSkillPrompt(input: CompositionInput): Prompt {
 
   // Bot identity
   systemParts.push(`You are a personal AI assistant.`);
+  systemParts.push(`Current date/time: ${new Date().toISOString()} (UTC)`);
 
   // Soul — injected before skill instructions so personality persists during skill execution
   if (soul) {
@@ -128,6 +129,7 @@ export function composeGeneralPrompt(input: GeneralCompositionInput): Prompt {
   const systemParts: string[] = [];
 
   systemParts.push(`You are ${botConfig.name}, a personal AI assistant.`);
+  systemParts.push(`Current date/time: ${new Date().toISOString()} (UTC)`);
 
   if (botConfig.soul) {
     // Structured soul — rich multi-section personality
